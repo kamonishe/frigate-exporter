@@ -1,0 +1,33 @@
+frigate:
+  url: https://frigate.local:8971
+  username: YOUR_USERNAME
+  password: YOUR_PASSWORD
+  verify_ssl: false
+  timeout: 30
+
+mqtt:
+  host: mqtt-broker
+  port: 1883
+  username: YOUR_MQTT_USERNAME
+  password: YOUR_MQTT_PASSWORD
+  topic: frigate/reviews
+
+export:
+  output: /exports
+  workers: 3
+  pre_capture: 3
+  post_capture: 3
+
+retention:
+  enabled: true
+  days: 1
+  check_interval_hours: 1
+
+filters:
+  cameras: []
+  labels: []
+  severity:
+    - alert
+
+logging:
+  level: INFO

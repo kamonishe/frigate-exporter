@@ -1,0 +1,27 @@
+services:
+  frigate-exporter:
+    image: ghcr.io/kamonishe/frigate-exporter:v1.0.0
+    container_name: frigate-exporter
+
+    # User that owns the Frigate media directory.
+    # Run `id` on the host to determine your UID and GID.
+    user: "1000:1000"
+
+    restart: unless-stopped
+
+    volumes:
+      # Exporter configuration
+      - ./config:/config:ro
+
+      # Root of your Frigate media directory
+      - /PATH_TO_FRIGATE_MEDIA:/media/frigate:ro
+
+      # Folder where exported clips will be stored
+      - /PATH_TO_EXPORTS:/exports
+
+    # Uncomment if your MQTT broker or Frigate use host networking.
+    # network_mode: host
+
+    # Optional environment variables
+    environment:
+      TZ: UTC
