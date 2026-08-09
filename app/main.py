@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import sys
 
 import aiomqtt
 
@@ -16,7 +17,14 @@ from app.workers.retention_worker import RetentionWorker
 
 logger = logging.getLogger("exporter")
 
+FRIGATE_CONNECT_RETRIES = 60
+FRIGATE_CONNECT_RETRY_DELAY = 5
+
 review_queue = ReviewQueue()
+
+
+class StartupError(RuntimeError):
+    """Raised when the exporter cannot start."""
 
 
 async def handle_review_message(message: aiomqtt.Message) -> None:
@@ -27,9 +35,6 @@ async def handle_review_message(message: aiomqtt.Message) -> None:
         logger.exception("Failed to decode MQTT payload")
         return
 
-    #
-    # We only care about completed reviews.
-    #
     if payload.get("type") != "end":
         return
 
@@ -60,23 +65,42 @@ async def async_main() -> None:
     mqtt.set_message_callback(handle_review_message)
 
     try:
-        #
-        # Connect to Frigate.
-        #
         await frigate.connect()
-        await frigate.login()
 
-        frigate_version = await frigate.version()
+        logger.info(
+            "Waiting for Frigate to become available..."
+        )
 
-        #
-        # Connect to MQTT.
-        #
+        for attempt in range(1, FRIGATE_CONNECT_RETRIES + 1):
+            try:
+                await frigate.login()
+                frigate_version = await frigate.version()
+
+                logger.info("Connected to Frigate.")
+
+                break
+
+            except Exception as exc:
+                logger.debug(
+                    "Connection attempt %d/%d failed: %s",
+                    attempt,
+                    FRIGATE_CONNECT_RETRIES,
+                    exc,
+                )
+
+                if attempt == FRIGATE_CONNECT_RETRIES:
+                    raise StartupError(
+                        f"Unable to connect to Frigate after "
+                        f"{FRIGATE_CONNECT_RETRIES} attempts."
+                    ) from None
+
+                await asyncio.sleep(
+                    FRIGATE_CONNECT_RETRY_DELAY
+                )
+
         await mqtt.connect()
         await mqtt.subscribe()
 
-        #
-        # Always display startup summary.
-        #
         print()
         print("=" * 60)
         print("               Frigate Exporter")
@@ -139,7 +163,13 @@ async def async_main() -> None:
 
 
 def main() -> None:
-    asyncio.run(async_main())
+    try:
+        asyncio.run(async_main())
+
+    except StartupError as exc:
+        logger.error(str(exc))
+        logger.error("Exiting.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

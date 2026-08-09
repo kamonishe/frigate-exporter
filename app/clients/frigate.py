@@ -70,6 +70,24 @@ class FrigateClient:
 
         logger.debug("Authentication successful")
 
+    async def _reconnect(self) -> None:
+        logger.info(
+            "Reconnecting to Frigate..."
+        )
+
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
+
+        await self.connect()
+
+        async with self._login_lock:
+            await self.login()
+
+        logger.info(
+            "Reconnected to Frigate."
+        )
+
     async def _request(
         self,
         method: str,
@@ -89,7 +107,18 @@ class FrigateClient:
                 **kwargs,
             )
 
-        response = await perform_request()
+        try:
+            response = await perform_request()
+
+        except aiohttp.ClientError as exc:
+            logger.warning(
+                "Connection to Frigate lost: %s",
+                exc,
+            )
+
+            await self._reconnect()
+
+            response = await perform_request()
 
         if response.status == 401:
             logger.warning(
@@ -107,6 +136,16 @@ class FrigateClient:
             logger.info(
                 "Authentication successful. Retrying request."
             )
+
+            response = await perform_request()
+
+        if response.status in (502, 503, 504):
+            logger.warning(
+                "Frigate temporarily unavailable (%d). Reconnecting...",
+                response.status,
+            )
+
+            await self._reconnect()
 
             response = await perform_request()
 
