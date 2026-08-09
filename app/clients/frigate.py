@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import aiohttp
@@ -17,6 +18,9 @@ class FrigateClient:
     def __init__(self, config: FrigateConfig):
         self._config = config
         self._session: aiohttp.ClientSession | None = None
+
+        # Prevent multiple workers from authenticating simultaneously.
+        self._login_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         logger.debug(
@@ -78,11 +82,33 @@ class FrigateClient:
                 "HTTP session has not been created."
             )
 
-        response = await self._session.request(
-            method,
-            path,
-            **kwargs,
-        )
+        async def perform_request() -> aiohttp.ClientResponse:
+            return await self._session.request(
+                method,
+                path,
+                **kwargs,
+            )
+
+        response = await perform_request()
+
+        if response.status == 401:
+            logger.warning(
+                "Authentication expired. Re-authenticating..."
+            )
+
+            async with self._login_lock:
+                response = await perform_request()
+
+                if response.status != 401:
+                    return response
+
+                await self.login()
+
+            logger.info(
+                "Authentication successful. Retrying request."
+            )
+
+            response = await perform_request()
 
         if response.status >= 400:
             body = await response.text()
