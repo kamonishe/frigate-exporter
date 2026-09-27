@@ -1,6 +1,6 @@
 services:
   frigate-exporter:
-    image: ghcr.io/kamonishe/frigate-exporter:v1.0.0
+    image: ghcr.io/kamonishe/frigate-exporter:v1.0.2
     container_name: frigate-exporter
 
     # User that owns the Frigate media directory.
