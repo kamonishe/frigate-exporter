@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] - 2026-09-27
+
+### Fixed
+
+- Restored camera, label, and severity filtering for completed Frigate reviews.
+- Added automatic MQTT reconnect and topic resubscription after temporary broker or network failures.
+- Updated documentation and Docker Compose examples to match the current configuration format.
+- Updated the lockfile and package metadata to version 1.0.2.
+
+### Improved
+
+- Validate malformed MQTT review payloads without stopping the message listener.
+- Log active review filter configuration at startup.
+
 ## [1.0.1] - 2026-08-09
 
 ### Fixed
