@@ -12,6 +12,7 @@ from app.core.logger import setup_logging
 from app.core.version import APP_VERSION
 from app.models.review import Review
 from app.queue.review_queue import ReviewQueue
+from app.services.review_filter import ReviewFilter
 from app.workers.export_worker import ExportWorker
 from app.workers.retention_worker import RetentionWorker
 
@@ -27,7 +28,10 @@ class StartupError(RuntimeError):
     """Raised when the exporter cannot start."""
 
 
-async def handle_review_message(message: aiomqtt.Message) -> None:
+async def handle_review_message(
+    message: aiomqtt.Message,
+    review_filter: ReviewFilter,
+) -> None:
     try:
         payload = json.loads(message.payload.decode())
 
@@ -38,7 +42,19 @@ async def handle_review_message(message: aiomqtt.Message) -> None:
     if payload.get("type") != "end":
         return
 
-    review = Review.model_validate(payload["after"])
+    try:
+        review = Review.model_validate(payload["after"])
+    except Exception:
+        logger.exception("Failed to validate Frigate review payload")
+        return
+
+    if not review_filter.matches(review):
+        logger.debug(
+            "Filtered review %s from camera %s",
+            review.id,
+            review.camera,
+        )
+        return
 
     logger.debug(
         "Queued review %s from camera %s",
@@ -61,8 +77,14 @@ async def async_main() -> None:
 
     frigate = FrigateClient(cfg.frigate)
     mqtt = MQTTClient(cfg.mqtt)
+    review_filter = ReviewFilter(cfg.filters)
 
-    mqtt.set_message_callback(handle_review_message)
+    mqtt.set_message_callback(
+        lambda message: handle_review_message(
+            message,
+            review_filter,
+        )
+    )
 
     try:
         await frigate.connect()
@@ -98,9 +120,6 @@ async def async_main() -> None:
                     FRIGATE_CONNECT_RETRY_DELAY
                 )
 
-        await mqtt.connect()
-        await mqtt.subscribe()
-
         print()
         print("=" * 60)
         print("               Frigate Exporter")
@@ -125,6 +144,12 @@ async def async_main() -> None:
         else:
             print(f"{'Retention':<12}: Disabled")
 
+        print(
+            f"{'Filters':<12}: "
+            f"cameras={len(cfg.filters.cameras) or 'all'}, "
+            f"labels={len(cfg.filters.labels) or 'all'}, "
+            f"severity={', '.join(cfg.filters.severity) or 'all'}"
+        )
         print(f"{'Logging':<12}: {cfg.logging.level.upper()}")
         print("=" * 60)
         print("Ready. Waiting for completed reviews...")
