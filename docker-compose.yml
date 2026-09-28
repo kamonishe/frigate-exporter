@@ -1,6 +1,6 @@
 services:
   frigate-exporter:
-    image: ghcr.io/kamonishe/frigate-exporter:v1.0.2
+    image: ghcr.io/kamonishe/frigate-exporter:v1.0.3
     container_name: frigate-exporter
 
     # User that owns the Frigate media directory.
@@ -19,7 +19,12 @@ services:
       # Folder where exported clips will be stored
       - /PATH_TO_EXPORTS:/exports
 
-    # Uncomment if your MQTT broker or Frigate use host networking.
+    # Dashboard (published to host loopback only).
+    ports:
+      - "127.0.0.1:5050:5050"
+
+    # If MQTT or Frigate require host networking, remove the ports mapping
+    # above before uncommenting network_mode.
     # network_mode: host
 
     # Optional environment variables

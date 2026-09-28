@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import sys
+from pathlib import Path
 
 import aiomqtt
 
@@ -12,7 +13,10 @@ from app.core.logger import setup_logging
 from app.core.version import APP_VERSION
 from app.models.review import Review
 from app.queue.review_queue import ReviewQueue
+from app.services.dashboard import DashboardServer
 from app.services.review_filter import ReviewFilter
+from app.services.runtime_status import RuntimeStatus
+from app.services.storage import summarize_export_storage
 from app.workers.export_worker import ExportWorker
 from app.workers.retention_worker import RetentionWorker
 
@@ -78,6 +82,10 @@ async def async_main() -> None:
     frigate = FrigateClient(cfg.frigate)
     mqtt = MQTTClient(cfg.mqtt)
     review_filter = ReviewFilter(cfg.filters)
+    status = RuntimeStatus(cfg.mqtt.topic, cfg.export.workers)
+    dashboard = DashboardServer(cfg.dashboard, status, review_queue)
+
+    mqtt.set_connection_callback(status.set_mqtt_connected)
 
     mqtt.set_message_callback(
         lambda message: handle_review_message(
@@ -87,6 +95,14 @@ async def async_main() -> None:
     )
 
     try:
+        if cfg.dashboard.enabled:
+            await dashboard.start()
+            logger.info(
+                "Dashboard available at http://%s:%d",
+                cfg.dashboard.host,
+                cfg.dashboard.port,
+            )
+
         await frigate.connect()
 
         logger.info(
@@ -99,10 +115,11 @@ async def async_main() -> None:
                 frigate_version = await frigate.version()
 
                 logger.info("Connected to Frigate.")
+                status.set_frigate_connected(frigate_version)
 
                 break
 
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "Connection attempt %d/%d failed: %s",
                     attempt,
@@ -155,6 +172,13 @@ async def async_main() -> None:
         print("Ready. Waiting for completed reviews...")
         print()
 
+        status.set_storage(
+            await asyncio.to_thread(
+                summarize_export_storage,
+                Path(cfg.export.output),
+            )
+        )
+
         worker_tasks = [
             asyncio.create_task(
                 ExportWorker(
@@ -162,6 +186,7 @@ async def async_main() -> None:
                     queue=review_queue,
                     frigate=frigate,
                     config=cfg,
+                    status=status,
                 ).run(),
                 name=f"export-worker-{i + 1}",
             )
@@ -169,7 +194,7 @@ async def async_main() -> None:
         ]
 
         retention_task = asyncio.create_task(
-            RetentionWorker(cfg).run(),
+            RetentionWorker(cfg, status).run(),
             name="retention-worker",
         )
 
@@ -181,6 +206,7 @@ async def async_main() -> None:
         )
 
     finally:
+        await dashboard.stop()
         await mqtt.disconnect()
         await frigate.disconnect()
 

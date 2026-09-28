@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 
 from app.models.config import Config
+from app.services.runtime_status import RuntimeStatus
+from app.services.storage import format_bytes, summarize_export_storage
 
 logger = logging.getLogger("frigate_exporter.retention")
 
@@ -15,8 +17,13 @@ class RetentionWorker:
     Periodically removes exported videos older than the configured retention period.
     """
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: Config,
+        status: RuntimeStatus,
+    ) -> None:
         self._config = config
+        self._status = status
         self._directory = Path(config.export.output)
 
     async def run(self) -> None:
@@ -87,13 +94,29 @@ class RetentionWorker:
                     file,
                 )
 
+        storage = summarize_export_storage(self._directory)
+        self._status.set_retention_result(
+            scanned=scanned,
+            deleted=deleted,
+            reclaimed_bytes=reclaimed_bytes,
+            storage=storage,
+        )
+
         if deleted == 0:
-            logger.info("Retention | Nothing to remove")
+            logger.info(
+                "Retention complete: no expired recordings removed; "
+                "%d exported recordings use %s.",
+                storage.file_count,
+                format_bytes(storage.total_bytes),
+            )
         else:
             logger.info(
-                "Retention | %d file(s) removed | %.2f MB reclaimed",
+                "Retention complete: removed %d expired recording(s) "
+                "(%s reclaimed); %d exported recordings use %s.",
                 deleted,
-                reclaimed_bytes / 1024 / 1024,
+                format_bytes(reclaimed_bytes),
+                storage.file_count,
+                format_bytes(storage.total_bytes),
             )
 
         logger.debug(

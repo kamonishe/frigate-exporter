@@ -22,6 +22,7 @@ class MQTTClient:
         self._config = config
         self._client: aiomqtt.Client | None = None
         self._callback: Callable[[aiomqtt.Message], Awaitable[None]] | None = None
+        self._connection_callback: Callable[[bool], None] | None = None
         self._stop_requested = False
 
     def set_message_callback(
@@ -32,6 +33,17 @@ class MQTTClient:
         Register a callback invoked for every MQTT message.
         """
         self._callback = callback
+
+    def set_connection_callback(
+        self,
+        callback: Callable[[bool], None],
+    ) -> None:
+        """Register a callback for MQTT connection state changes."""
+        self._connection_callback = callback
+
+    def _notify_connection(self, connected: bool) -> None:
+        if self._connection_callback is not None:
+            self._connection_callback(connected)
 
     async def connect(self) -> None:
         if self._client is not None:
@@ -52,6 +64,7 @@ class MQTTClient:
 
         await client.__aenter__()
         self._client = client
+        self._notify_connection(True)
 
         logger.info(
             "Connected to MQTT broker %s:%s",
@@ -78,6 +91,7 @@ class MQTTClient:
     async def _close_client(self) -> None:
         client = self._client
         self._client = None
+        self._notify_connection(False)
 
         if client is None:
             return

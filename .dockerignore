@@ -21,5 +21,6 @@ dist
 logs
 
 config/config.yml
+.env.*
 
 exports

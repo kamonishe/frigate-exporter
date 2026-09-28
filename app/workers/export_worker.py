@@ -10,6 +10,8 @@ from app.clients.frigate import FrigateClient
 from app.models.config import Config
 from app.models.review import Review
 from app.queue.review_queue import ReviewQueue
+from app.services.runtime_status import RuntimeStatus
+from app.services.storage import summarize_export_storage
 
 logger = logging.getLogger("frigate_exporter.worker")
 
@@ -25,11 +27,13 @@ class ExportWorker:
         queue: ReviewQueue,
         frigate: FrigateClient,
         config: Config,
+        status: RuntimeStatus,
     ) -> None:
         self._worker_id = worker_id
         self._queue = queue
         self._frigate = frigate
         self._config = config
+        self._status = status
 
         self._output_dir = Path(
             self._config.export.output
@@ -43,8 +47,10 @@ class ExportWorker:
 
         while True:
             review: Review = await self._queue.get()
+            self._status.set_worker_review(self._worker_id, review)
 
             started = time.monotonic()
+            error: str | None = None
 
             try:
                 logger.debug("----------------------------------------")
@@ -78,6 +84,7 @@ class ExportWorker:
                 )
 
                 export_id = export["export_id"]
+                self._status.set_worker_export(self._worker_id, export_id)
 
                 logger.debug(
                     "Worker #%d queued export %s",
@@ -161,6 +168,10 @@ class ExportWorker:
                             "Copied file size does not match source."
                         )
 
+                    self._status.set_storage(
+                        summarize_export_storage(self._output_dir)
+                    )
+
                     logger.debug(
                         "Requesting Frigate cleanup"
                     )
@@ -185,12 +196,17 @@ class ExportWorker:
 
                     break
 
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Worker #%d failed processing review %s",
                     self._worker_id,
                     review.id,
                 )
+                error = str(exc)
 
             finally:
+                self._status.set_worker_idle(
+                    self._worker_id,
+                    error=error,
+                )
                 self._queue.task_done()

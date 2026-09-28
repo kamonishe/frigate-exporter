@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.3] - 2026-09-29
+
+### Added
+
+- Read-only dashboard with Frigate and MQTT connection status, queue depth, worker activity, retention results, and exported-recording storage usage.
+
+### Improved
+
+- Retention logs now include the total number and storage used by retained exported recordings.
+
 ## [1.0.2] - 2026-09-27
 
 ### Fixed

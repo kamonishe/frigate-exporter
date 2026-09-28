@@ -53,7 +53,6 @@ config/config.local.yml
 # Docker
 # -----------------------------------------------------------------------------
 docker-compose.override.yml
-docker-compose.dev.yml
 
 # -----------------------------------------------------------------------------
 # Development

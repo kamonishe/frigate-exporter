@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FrigateConfig(BaseModel):
@@ -40,6 +40,12 @@ class LoggingConfig(BaseModel):
     level: str
 
 
+class DashboardConfig(BaseModel):
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 5050
+
+
 class Config(BaseModel):
     frigate: FrigateConfig
     mqtt: MQTTConfig
@@ -47,3 +53,6 @@ class Config(BaseModel):
     retention: RetentionConfig
     filters: FilterConfig
     logging: LoggingConfig
+    dashboard: DashboardConfig = Field(
+        default_factory=DashboardConfig
+    )

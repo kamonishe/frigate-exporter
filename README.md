@@ -49,6 +49,11 @@ filters:
   severity:
     - alert
 
+dashboard:
+  enabled: true
+  host: 0.0.0.0
+  port: 5050
+
 logging:
   level: INFO
 ```
@@ -64,6 +69,10 @@ All filter lists are optional.
 Frigate publishes review events on the `frigate/reviews` topic. The exporter processes only the final `end` message for each review.
 
 The exporter automatically reconnects to MQTT after temporary connection failures.
+
+### Dashboard
+
+The read-only dashboard listens on port `5050` by default. The supplied Compose file publishes it to host loopback at `http://127.0.0.1:5050`. It shows MQTT and Frigate connection state, queued reviews, active workers, retention activity, and the total storage used by exported `.mp4` recordings. Set `dashboard.enabled: false` to disable it. The dashboard has no authentication, so keep it on a trusted interface or place it behind an authenticated reverse proxy.
 
 ## Retention
 
