@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.models.config import Config
@@ -25,6 +26,11 @@ class RetentionWorker:
         self._config = config
         self._status = status
         self._directory = Path(config.export.output)
+        self._status.configure_retention(
+            enabled=config.retention.enabled,
+            days=config.retention.days,
+            check_interval_hours=config.retention.check_interval_hours,
+        )
 
     async def run(self) -> None:
         if not self._config.retention.enabled:
@@ -42,6 +48,11 @@ class RetentionWorker:
                 await self.cleanup()
             except Exception:
                 logger.exception("Retention cleanup failed.")
+
+            next_run_at = datetime.now(UTC) + timedelta(
+                hours=self._config.retention.check_interval_hours
+            )
+            self._status.set_retention_next_run(next_run_at.isoformat())
 
             logger.debug(
                 "Next retention cleanup in %d hour(s).",
@@ -65,6 +76,9 @@ class RetentionWorker:
         cutoff = (
             time.time()
             - self._config.retention.days * 24 * 3600
+        )
+        next_run_at = datetime.now(UTC) + timedelta(
+            hours=self._config.retention.check_interval_hours
         )
 
         scanned = 0
@@ -100,6 +114,8 @@ class RetentionWorker:
             deleted=deleted,
             reclaimed_bytes=reclaimed_bytes,
             storage=storage,
+            cutoff_at=datetime.fromtimestamp(cutoff, UTC).isoformat(),
+            next_run_at=next_run_at.isoformat(),
         )
 
         if deleted == 0:

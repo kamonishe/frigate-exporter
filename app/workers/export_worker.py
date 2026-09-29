@@ -77,6 +77,11 @@ class ExportWorker:
                     end_time,
                 )
 
+                self._status.set_worker_phase(
+                    self._worker_id,
+                    "exporting",
+                )
+
                 export = await self._frigate.start_export(
                     camera=review.camera,
                     start_time=start_time,
@@ -158,9 +163,18 @@ class ExportWorker:
                         destination,
                     )
 
-                    shutil.copy2(source, destination)
-
                     source_size = source.stat().st_size
+                    self._status.set_worker_copy_progress(
+                        self._worker_id,
+                        0,
+                        source_size,
+                    )
+                    await asyncio.to_thread(
+                        self._copy_with_progress,
+                        source,
+                        destination,
+                        source_size,
+                    )
                     destination_size = destination.stat().st_size
 
                     if source_size != destination_size:
@@ -174,6 +188,11 @@ class ExportWorker:
 
                     logger.debug(
                         "Requesting Frigate cleanup"
+                    )
+
+                    self._status.set_worker_phase(
+                        self._worker_id,
+                        "cleanup",
                     )
 
                     await self._frigate.delete_exports(
@@ -210,3 +229,22 @@ class ExportWorker:
                     error=error,
                 )
                 self._queue.task_done()
+
+    def _copy_with_progress(
+        self,
+        source: Path,
+        destination: Path,
+        total_bytes: int,
+    ) -> None:
+        copied = 0
+        with source.open("rb") as source_file, destination.open("wb") as output:
+            while chunk := source_file.read(1024 * 1024):
+                output.write(chunk)
+                copied += len(chunk)
+                self._status.set_worker_copy_progress(
+                    self._worker_id,
+                    copied,
+                    total_bytes,
+                )
+
+        shutil.copystat(source, destination)

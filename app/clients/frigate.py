@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 import aiohttp
 
@@ -21,6 +22,23 @@ class FrigateClient:
 
         # Prevent multiple workers from authenticating simultaneously.
         self._login_lock = asyncio.Lock()
+        self._connection_callback: (
+            Callable[[str, str | None], None] | None
+        ) = None
+
+    def set_connection_callback(
+        self,
+        callback: Callable[[str, str | None], None],
+    ) -> None:
+        self._connection_callback = callback
+
+    def _notify_connection(
+        self,
+        state: str,
+        error: str | None = None,
+    ) -> None:
+        if self._connection_callback is not None:
+            self._connection_callback(state, error)
 
     async def connect(self) -> None:
         logger.debug(
@@ -75,18 +93,25 @@ class FrigateClient:
             "Reconnecting to Frigate..."
         )
 
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
+        self._notify_connection("reconnecting")
 
-        await self.connect()
+        try:
+            if self._session is not None:
+                await self._session.close()
+                self._session = None
 
-        async with self._login_lock:
-            await self.login()
+            await self.connect()
+
+            async with self._login_lock:
+                await self.login()
+        except Exception as exc:
+            self._notify_connection("disconnected", str(exc))
+            raise
 
         logger.info(
             "Reconnected to Frigate."
         )
+        self._notify_connection("connected")
 
     async def _request(
         self,
@@ -236,3 +261,5 @@ class FrigateClient:
             self._session = None
 
             logger.debug("HTTP session closed")
+
+        self._notify_connection("disconnected")

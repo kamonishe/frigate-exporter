@@ -1,6 +1,6 @@
 services:
   frigate-exporter:
-    image: ghcr.io/kamonishe/frigate-exporter:v1.0.3
+    image: ghcr.io/kamonishe/frigate-exporter:v1.0.4
     container_name: frigate-exporter
 
     # User that owns the Frigate media directory.
@@ -19,14 +19,29 @@ services:
       # Folder where exported clips will be stored
       - /PATH_TO_EXPORTS:/exports
 
-    # Dashboard (published to host loopback only).
+    # Dashboard (available through the Docker host on port 5050).
     ports:
-      - "127.0.0.1:5050:5050"
+      - "5050:5050"
 
     # If MQTT or Frigate require host networking, remove the ports mapping
     # above before uncommenting network_mode.
     # network_mode: host
 
-    # Optional environment variables
+    # Environment variables
     environment:
       TZ: UTC
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:?Set DASHBOARD_USERNAME in .env}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD in .env}
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:5050/healthz', timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

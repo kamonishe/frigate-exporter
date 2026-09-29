@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import yaml
@@ -43,5 +44,15 @@ def load_config() -> Config:
         raise RuntimeError(
             f"Configuration file '{config_file}' is empty."
         )
+
+    dashboard = raw.setdefault("dashboard", {})
+    dashboard_environment = {
+        "username": "DASHBOARD_USERNAME",
+        "password": "DASHBOARD_PASSWORD",
+    }
+    for field, environment_name in dashboard_environment.items():
+        value = os.getenv(environment_name)
+        if value is not None:
+            dashboard[field] = value
 
     return Config.model_validate(raw)

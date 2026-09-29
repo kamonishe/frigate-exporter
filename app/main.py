@@ -77,15 +77,33 @@ async def handle_review_message(
 async def async_main() -> None:
     cfg = load_config()
 
-    setup_logging(cfg.logging.level)
+    status = RuntimeStatus(
+        cfg.mqtt.topic,
+        cfg.export.workers,
+        secrets=[
+            cfg.frigate.username,
+            cfg.frigate.password,
+            cfg.mqtt.username,
+            cfg.mqtt.password,
+            cfg.dashboard.username or "",
+            cfg.dashboard.password or "",
+        ],
+    )
+    status.configure_retention(
+        enabled=cfg.retention.enabled,
+        days=cfg.retention.days,
+        check_interval_hours=cfg.retention.check_interval_hours,
+    )
+
+    setup_logging(cfg.logging.level, status.add_log)
 
     frigate = FrigateClient(cfg.frigate)
     mqtt = MQTTClient(cfg.mqtt)
     review_filter = ReviewFilter(cfg.filters)
-    status = RuntimeStatus(cfg.mqtt.topic, cfg.export.workers)
     dashboard = DashboardServer(cfg.dashboard, status, review_queue)
 
-    mqtt.set_connection_callback(status.set_mqtt_connected)
+    mqtt.set_connection_callback(status.set_mqtt_state)
+    frigate.set_connection_callback(status.set_frigate_state)
 
     mqtt.set_message_callback(
         lambda message: handle_review_message(
@@ -96,6 +114,11 @@ async def async_main() -> None:
 
     try:
         if cfg.dashboard.enabled:
+            if not cfg.dashboard.username or not cfg.dashboard.password:
+                raise StartupError(
+                    "Dashboard authentication requires "
+                    "DASHBOARD_USERNAME and DASHBOARD_PASSWORD."
+                )
             await dashboard.start()
             logger.info(
                 "Dashboard available at http://%s:%d",
@@ -120,6 +143,7 @@ async def async_main() -> None:
                 break
 
             except Exception as exc:  # noqa: BLE001
+                status.set_frigate_state("disconnected", str(exc))
                 logger.debug(
                     "Connection attempt %d/%d failed: %s",
                     attempt,

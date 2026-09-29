@@ -78,6 +78,11 @@ class RetentionWorkerTests(unittest.IsolatedAsyncioTestCase):
                 snapshot["retention"]["reclaimed_bytes"],
                 1024,
             )
+            self.assertTrue(snapshot["retention"]["enabled"])
+            self.assertEqual(snapshot["retention"]["days"], 1)
+            self.assertIsNotNone(snapshot["retention"]["cutoff_at"])
+            self.assertIsNotNone(snapshot["retention"]["last_run_at"])
+            self.assertIsNotNone(snapshot["retention"]["next_run_at"])
             self.assertIn(
                 "1 exported recordings use 2.0 KB",
                 logs.output[0],

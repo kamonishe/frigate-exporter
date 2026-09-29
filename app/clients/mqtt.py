@@ -22,7 +22,9 @@ class MQTTClient:
         self._config = config
         self._client: aiomqtt.Client | None = None
         self._callback: Callable[[aiomqtt.Message], Awaitable[None]] | None = None
-        self._connection_callback: Callable[[bool], None] | None = None
+        self._connection_callback: (
+            Callable[[str, str | None], None] | None
+        ) = None
         self._stop_requested = False
 
     def set_message_callback(
@@ -36,14 +38,18 @@ class MQTTClient:
 
     def set_connection_callback(
         self,
-        callback: Callable[[bool], None],
+        callback: Callable[[str, str | None], None],
     ) -> None:
         """Register a callback for MQTT connection state changes."""
         self._connection_callback = callback
 
-    def _notify_connection(self, connected: bool) -> None:
+    def _notify_connection(
+        self,
+        state: str,
+        error: str | None = None,
+    ) -> None:
         if self._connection_callback is not None:
-            self._connection_callback(connected)
+            self._connection_callback(state, error)
 
     async def connect(self) -> None:
         if self._client is not None:
@@ -64,7 +70,7 @@ class MQTTClient:
 
         await client.__aenter__()
         self._client = client
-        self._notify_connection(True)
+        self._notify_connection("connected")
 
         logger.info(
             "Connected to MQTT broker %s:%s",
@@ -91,8 +97,6 @@ class MQTTClient:
     async def _close_client(self) -> None:
         client = self._client
         self._client = None
-        self._notify_connection(False)
-
         if client is None:
             return
 
@@ -146,14 +150,17 @@ class MQTTClient:
                 )
 
                 await self._close_client()
+                self._notify_connection("reconnecting", str(exc))
                 await asyncio.sleep(RECONNECT_DELAY)
 
             except Exception:
                 await self._close_client()
+                self._notify_connection("disconnected")
                 raise
 
     async def disconnect(self) -> None:
         self._stop_requested = True
         await self._close_client()
+        self._notify_connection("disconnected")
 
         logger.debug("Disconnected from MQTT broker")

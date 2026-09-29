@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.4] - 2026-09-29
+
+- Add live log-level controls and an explicit HTTP-log toggle (off by default).
+- Organize connection and storage/retention details into labeled rows.
+
+### Added
+
+- Protect the dashboard and status API with credentials supplied through `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD`.
+- Show worker phases, elapsed time, animated export progress, and byte-based local-copy progress.
+- Show the 10 latest exporter log entries from a bounded, in-memory buffer with configured credentials redacted.
+- Add a public health endpoint and Docker Compose health check.
+
+### Improved
+
+- Report connected, disconnected, and reconnecting states with connection timestamps and the latest error for Frigate and MQTT.
+- Combine exported-storage usage with retention policy, cutoff, last cleanup, removed recordings, reclaimed space, and next cleanup.
+- Publish dashboard port `5050` on the Docker host for private-network access.
+
 ## [1.0.3] - 2026-09-29
 
 ### Added

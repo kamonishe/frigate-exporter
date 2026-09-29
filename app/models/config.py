@@ -44,6 +44,8 @@ class DashboardConfig(BaseModel):
     enabled: bool = True
     host: str = "0.0.0.0"
     port: int = 5050
+    username: str | None = None
+    password: str | None = None
 
 
 class Config(BaseModel):

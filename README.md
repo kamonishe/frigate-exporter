@@ -1,5 +1,9 @@
 # Frigate Exporter
 
+<p align="center">
+  <img src="app/static/clip-courier-badge.svg" alt="Clip Courier — Frigate Exporter logo" width="180" height="180">
+</p>
+
 Frigate Exporter automatically exports completed Frigate review events to a local folder.
 
 ## Requirements
@@ -11,7 +15,14 @@ Frigate Exporter automatically exports completed Frigate review events to a loca
 
 ## Docker Compose
 
-Use the included `docker-compose.yml` as a starting point. The example is pinned to the current release.
+Use the included `docker-compose.yml` as a starting point. The example is pinned to the current release. Copy `.env.example` to `.env`, replace the dashboard credentials, and then start the container:
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+The `.env` file is ignored by Git. You can alternatively provide `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` through the shell or your container-management interface.
 
 ## Configuration
 
@@ -72,7 +83,13 @@ The exporter automatically reconnects to MQTT after temporary connection failure
 
 ### Dashboard
 
-The read-only dashboard listens on port `5050` by default. The supplied Compose file publishes it to host loopback at `http://127.0.0.1:5050`. It shows MQTT and Frigate connection state, queued reviews, active workers, retention activity, and the total storage used by exported `.mp4` recordings. Set `dashboard.enabled: false` to disable it. The dashboard has no authentication, so keep it on a trusted interface or place it behind an authenticated reverse proxy.
+The log-level dropdown and **Enable HTTP logs (aiohttp)** checkbox apply automatically to dashboard and container logging. Recent entries are filtered immediately. HTTP logs are disabled by default. These temporary settings reset on restart to the configured logging level. Frigate, MQTT, and retention details are displayed in labeled rows.
+
+The read-only dashboard listens on port `5050` by default. The supplied Compose file publishes `5050:5050`, making it available at `http://HOST_PRIVATE_IP:5050`. Sign in using the `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` environment variables.
+
+The dashboard shows detailed MQTT and Frigate connection state, queue depth, worker phases and export progress, recent exporter logs, and combined exported-storage and retention information. Its `/healthz` endpoint supports the supplied Docker health check. Set `dashboard.enabled: false` to disable the dashboard.
+
+The dashboard has a login page and a Sign out button. Browser sessions expire after 12 hours or when the exporter restarts. HTTP Basic authentication remains available for API clients, without browser login popups. The application does not provide TLS. Keep port `5050` on a trusted private network or place the dashboard behind an HTTPS reverse proxy. Do not expose it directly to the public internet.
 
 ## Retention
 
