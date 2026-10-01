@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.5] - 2026-10-01
+
+### Added
+
+- Recover Frigate connectivity automatically after a Frigate restart, even when no export is active.
+- Show worker start and completion timestamps in the dashboard.
+- Add configuration-loader validation with clearer YAML errors and regression coverage.
+
+### Changed
+
+- Remove redundant dashboard host and port fields from configuration examples; defaults remain `0.0.0.0:5050`.
+
 ## [1.0.4] - 2026-09-29
 
 - Add live log-level controls and an explicit HTTP-log toggle (off by default).

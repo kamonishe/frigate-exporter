@@ -62,8 +62,6 @@ filters:
 
 dashboard:
   enabled: true
-  host: 0.0.0.0
-  port: 5050
 
 logging:
   level: INFO

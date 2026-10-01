@@ -24,6 +24,7 @@ logger = logging.getLogger("exporter")
 
 FRIGATE_CONNECT_RETRIES = 60
 FRIGATE_CONNECT_RETRY_DELAY = 5
+FRIGATE_HEALTH_INTERVAL = 15
 
 review_queue = ReviewQueue()
 
@@ -72,6 +73,23 @@ async def handle_review_message(
         "Queue size: %d",
         review_queue.size(),
     )
+
+
+async def monitor_frigate(
+    frigate: FrigateClient,
+    status: RuntimeStatus,
+) -> None:
+    """Keep probing Frigate so restarts recover without a worker request."""
+    while True:
+        try:
+            version = await frigate.version()
+            status.set_frigate_connected(version)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            status.set_frigate_state("disconnected", str(exc))
+            logger.warning("Frigate health check failed: %s", exc)
+        await asyncio.sleep(FRIGATE_HEALTH_INTERVAL)
 
 
 async def async_main() -> None:
@@ -221,6 +239,10 @@ async def async_main() -> None:
             RetentionWorker(cfg, status).run(),
             name="retention-worker",
         )
+        frigate_monitor_task = asyncio.create_task(
+            monitor_frigate(frigate, status),
+            name="frigate-health-monitor",
+        )
 
         await mqtt.listen()
 
@@ -230,6 +252,10 @@ async def async_main() -> None:
         )
 
     finally:
+        monitor_task = locals().get("frigate_monitor_task")
+        if monitor_task is not None:
+            monitor_task.cancel()
+            await asyncio.gather(monitor_task, return_exceptions=True)
         await dashboard.stop()
         await mqtt.disconnect()
         await frigate.disconnect()

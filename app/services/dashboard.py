@@ -278,7 +278,7 @@ _DASHBOARD_HTML = """<!doctype html>
       <article class="card wide"><div>Exported storage &amp; retention</div><div class="value" id="storage">—</div><div class="detail" id="retention"></div></article>
     </section>
     <div class="workers-heading"><h2>Workers</h2><span class="queue-summary" id="queue">Loading queue…</span></div>
-    <div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Activity</th><th>Progress</th><th>Elapsed</th><th>Last result</th></tr></thead>
+    <div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Activity</th><th>Progress</th><th>Elapsed</th><th>Started</th><th>Completed</th><th>Last result</th></tr></thead>
     <tbody id="workers"></tbody></table></div>
     <h2>Latest logs</h2>
     <div class="controls">
@@ -406,6 +406,8 @@ _DASHBOARD_HTML = """<!doctype html>
           addCell(row, worker.id); addCell(row, worker.state); addCell(row, activity);
           row.append(progressCell(worker));
           addCell(row, duration(worker.elapsed_seconds ?? worker.last_elapsed_seconds));
+          addCell(row, timestamp(worker.started_at));
+          addCell(row, timestamp(worker.last_completed_at));
           addCell(row, result); return row;
         }));
 
