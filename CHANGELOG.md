@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.0.6] - Unreleased
+## [1.0.7] - 2026-10-09
+
+### Fixed
+
+- Release Frigate HTTP responses on authentication, retry, error, and normal API paths to prevent file-descriptor exhaustion and dashboard socket failures.
+
+## [1.0.6] - 2026-10-09
 
 ### Added
 

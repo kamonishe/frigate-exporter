@@ -82,11 +82,14 @@ class FrigateClient:
                 "password": self._config.password,
             },
         )
-
-        if response.status != 200:
-            raise RuntimeError(
-                f"Authentication failed ({response.status})"
-            )
+        try:
+            if response.status != 200:
+                body = await response.text()
+                raise RuntimeError(
+                    f"Authentication failed ({response.status}): {body}"
+                )
+        finally:
+            response.release()
 
         logger.debug("Authentication successful")
 
@@ -151,6 +154,7 @@ class FrigateClient:
             logger.warning(
                 "Authentication expired. Re-authenticating..."
             )
+            response.release()
 
             async with self._login_lock:
                 response = await perform_request()
@@ -158,6 +162,7 @@ class FrigateClient:
                 if response.status != 401:
                     return response
 
+                response.release()
                 await self.login()
 
             logger.info(
@@ -171,6 +176,7 @@ class FrigateClient:
                 "Frigate temporarily unavailable (%d). Reconnecting...",
                 response.status,
             )
+            response.release()
 
             await self._reconnect()
 
@@ -187,12 +193,27 @@ class FrigateClient:
                 body,
             )
 
+            response.release()
             raise RuntimeError(
                 f"{method} {path} failed "
                 f"({response.status}): {body}"
             )
 
         return response
+
+    @staticmethod
+    async def _read_json(response: aiohttp.ClientResponse):
+        try:
+            return await response.json()
+        finally:
+            response.release()
+
+    @staticmethod
+    async def _read_text(response: aiohttp.ClientResponse) -> str:
+        try:
+            return await response.text()
+        finally:
+            response.release()
 
     @staticmethod
     def _review_timestamp(value: object) -> float:
@@ -217,7 +238,7 @@ class FrigateClient:
                 "limit": 1000,
             },
         )
-        payload = await response.json()
+        payload = await self._read_json(response)
         reviews = []
         for item in payload:
             if not item.get("end_time"):
@@ -234,7 +255,7 @@ class FrigateClient:
             "/api/version",
         )
 
-        return (await response.text()).strip()
+        return (await self._read_text(response)).strip()
 
     async def start_export(
         self,
@@ -257,7 +278,7 @@ class FrigateClient:
             },
         )
 
-        return await response.json()
+        return await self._read_json(response)
 
     async def list_exports(self) -> list[dict]:
         response = await self._request(
@@ -265,7 +286,7 @@ class FrigateClient:
             "/api/exports",
         )
 
-        return await response.json()
+        return await self._read_json(response)
 
     async def delete_exports(
         self,
@@ -284,7 +305,7 @@ class FrigateClient:
             },
         )
 
-        result = await response.json()
+        result = await self._read_json(response)
 
         logger.debug(
             "Frigate cleanup complete: %s",
