@@ -1,6 +1,8 @@
 import base64
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from aiohttp import web
@@ -102,6 +104,8 @@ class RuntimeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["workers"][0]["export_id"], "export-1")
         self.assertEqual(payload["storage"]["total_size"], "1.5 KB")
         self.assertEqual(payload["retention"]["reclaimed_size"], "1.0 KB")
+        self.assertGreaterEqual(len(payload["storage_history"]), 1)
+        self.assertGreaterEqual(len(payload["retention_history"]), 1)
 
         status.set_worker_idle(1)
         idle = status.snapshot(0)["workers"][0]
@@ -168,6 +172,29 @@ class RuntimeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["workers"][0]["progress_percent"], 25.0)
         self.assertEqual(len(snapshot["logs"]), 10)
         self.assertEqual(snapshot["logs"][0]["message"], "entry 2 [REDACTED]")
+
+
+    def test_reconciliation_result_reports_drained_success(self) -> None:
+        status = RuntimeStatus("frigate/reviews", 1)
+        status.set_reconciliation_result(discovered=6, queued=2, pending=0)
+        result = status.snapshot(0)["reconciliation"]
+        self.assertEqual(result["state"], "success")
+        self.assertEqual(result["pending"], 0)
+        self.assertIsNone(result["last_error"])
+
+        status.set_reconciliation_result(discovered=1, queued=1, pending=1)
+        self.assertEqual(status.snapshot(1)["reconciliation"]["state"], "pending")
+
+
+    def test_history_persists_and_uses_retention_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            history_path = Path(directory) / "history.json"
+            first = RuntimeStatus("frigate/reviews", 1, history_path=history_path)
+            first.configure_retention(enabled=True, days=7, check_interval_hours=1)
+            first.set_storage(ExportStorageSummary(file_count=1, total_bytes=1024))
+            restored = RuntimeStatus("frigate/reviews", 1, history_path=history_path)
+            restored.configure_retention(enabled=True, days=7, check_interval_hours=1)
+            self.assertEqual(len(restored.snapshot(0)["storage_history"]), 1)
 
 
 if __name__ == "__main__":

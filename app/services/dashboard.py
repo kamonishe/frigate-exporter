@@ -220,7 +220,8 @@ _LOGIN_HTML = """<!doctype html>
       });
       if (response.ok) { location.replace('/'); return; }
       error.textContent = response.status === 401 ? 'Invalid username or password.' : 'Unable to sign in. Please retry.';
-    } catch (_) { error.textContent = 'Cannot reach the exporter. Please retry.'; }
+    } catch (_) {
+        error.textContent = 'Cannot reach the exporter. Please retry.'; }
     finally { button.disabled = false; document.getElementById('password').value = ''; }
   });
 </script></body></html>"""
@@ -239,8 +240,8 @@ _DASHBOARD_HTML = """<!doctype html>
     h1 { margin-bottom: .2rem; } h2 { margin-top: 2rem; }
     .muted, .detail { color: #9ca3af; }
     .detail { font-size: .85rem; line-height: 1.5; margin-top: .6rem; }
-    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-    .card { background: #1f2937; border-radius: .75rem; padding: 1rem; }
+    .grid { display: grid; gap: .75rem; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+    .card { background: #1f2937; border-radius: .75rem; padding: .8rem; }
     .wide { grid-column: 1 / -1; }
     .detail-row { display: grid; grid-template-columns: minmax(100px, .7fr) 1fr; gap: .8rem; padding: .55rem 0; margin: 0; border-top: 1px solid #374151; }
     dt { color: #9ca3af; } dd { margin: 0; overflow-wrap: anywhere; }
@@ -251,6 +252,13 @@ _DASHBOARD_HTML = """<!doctype html>
     select, button { background: #1f2937; color: #e5e7eb; padding: .5rem; border: 1px solid #6b7280; border-radius: .4rem; }
     #retention { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 2rem; }
     .value { font-size: 1.45rem; font-weight: 700; margin-top: .4rem; text-transform: capitalize; }
+    .compact-bubbles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: .6rem; margin-top: .7rem; }
+    .status-bubble { background: #1f2937; border: 1px solid #374151; border-radius: .5rem; padding: .65rem .75rem; min-width: 0; }
+    .status-bubble .value { font-size: 1.1rem; margin-top: .2rem; }
+    .compact-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: .7rem 1.5rem; margin-top: .8rem; }
+    .compact-details h3 { margin: 0 0 .25rem; font-size: .95rem; color: #e5e7eb; }
+    .detail-panel { min-width: 0; }
+    .good { color: #34d399; } .bad { color: #f87171; } .warn { color: #fbbf24; }
     .good { color: #34d399; } .bad { color: #f87171; } .warn { color: #fbbf24; }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
@@ -261,7 +269,8 @@ _DASHBOARD_HTML = """<!doctype html>
     .log-error { color: #f87171; } .log-warning { color: #fbbf24; }
     .logs td:last-child { overflow-wrap: anywhere; }
     @keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(300%); } }
-    @media (max-width: 600px) { main { padding: 1rem; } .wide { grid-column: span 1; } }
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } .wide { grid-column: span 1; } }
+    @media (max-width: 600px) { main { padding: 1rem; } }
   </style>
 </head>
 <body>
@@ -275,11 +284,11 @@ _DASHBOARD_HTML = """<!doctype html>
     <section class="grid">
       <article class="card"><div>Frigate</div><div class="value" id="frigate">—</div><div class="detail" id="frigate-detail"></div></article>
       <article class="card"><div>MQTT</div><div class="value" id="mqtt">—</div><div class="detail" id="mqtt-detail"></div></article>
-      <article class="card wide"><div>Exported storage &amp; retention</div><div class="value" id="storage">—</div><div class="detail" id="retention"></div></article>
+      <article class="card"><div>Retention &amp; exported storage</div><div class="compact-bubbles"><div class="status-bubble"><div class="muted">Exported storage (current)</div><div class="value" id="storage">—</div></div><div class="status-bubble"><div class="muted">Retention status</div><div class="value" id="retention-status">—</div></div></div><div class="detail-panel"><h3>Retention details</h3><div class="detail" id="retention"></div></div></article>
+      <article class="card"><div>Review reconciliation</div><div class="status-bubble" style="margin-top:.7rem"><div class="muted">Reconciliation status</div><div class="value" id="reconciliation-status">—</div></div><div class="detail-panel"><h3>Reconciliation details</h3><div class="detail" id="reconciliation-detail"></div></div></article>
     </section>
     <div class="workers-heading"><h2>Workers</h2><span class="queue-summary" id="queue">Loading queue…</span></div>
-    <div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Activity</th><th>Progress</th><th>Elapsed</th><th>Started</th><th>Completed</th><th>Last result</th></tr></thead>
-    <tbody id="workers"></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Activity</th><th>Progress</th><th>Elapsed</th><th>Started</th><th>Completed</th><th>Last result</th></tr></thead><tbody id="workers"></tbody></table></div>
     <h2>Latest logs</h2>
     <div class="controls">
       <label>Log level <select id="log-level"><option>DEBUG</option><option selected>INFO</option><option>WARNING</option><option>ERROR</option><option>CRITICAL</option></select></label>
@@ -291,11 +300,13 @@ _DASHBOARD_HTML = """<!doctype html>
     <tbody id="logs"></tbody></table></div>
   </main>
   <script>
+    const setText = (id, value) => { const element = document.getElementById(id); if (element) element.textContent = value; };
     const timestamp = value => value ? new Date(value).toLocaleString() : '—';
     const duration = value => value == null ? '—' : `${Number(value).toFixed(1)} s`;
     const stateClass = state => state === 'connected' ? 'good' : state === 'reconnecting' ? 'warn' : 'bad';
     const detailRows = (id, entries) => {
-      document.getElementById(id).replaceChildren(...entries.map(([label, value]) => {
+      const target = document.getElementById(id); if (!target) return;
+      target.replaceChildren(...entries.map(([label, value]) => {
         const row = document.createElement('dl'); row.className = 'detail-row';
         const term = document.createElement('dt'); term.textContent = label;
         const detail = document.createElement('dd'); detail.textContent = value;
@@ -329,6 +340,7 @@ _DASHBOARD_HTML = """<!doctype html>
         loggingEdited = false;
         document.getElementById('logging-feedback').textContent = `Saved: ${saved.level} · HTTP logs ${saved.http_logs ? 'on' : 'off'}`;
       } catch (_) {
+        console.error('Dashboard logging save failed', _);
         loggingEdited = false;
         document.getElementById('logging-feedback').textContent = 'Save failed. Reloading current settings.';
       } finally {
@@ -340,6 +352,7 @@ _DASHBOARD_HTML = """<!doctype html>
     for (const id of ['log-level', 'http-logs']) document.getElementById(id).addEventListener('change', saveLogging);
     const setState = (id, connection) => {
       const element = document.getElementById(id);
+      if (!element) return;
       element.textContent = connection.state;
       element.className = `value ${stateClass(connection.state)}`;
       const details = [];
@@ -364,42 +377,64 @@ _DASHBOARD_HTML = """<!doctype html>
       fill.style.width = worker.progress_percent == null ? '' : `${worker.progress_percent}%`;
       bar.append(fill); cell.append(label, bar); return cell;
     };
+    const formatBytesClient = bytes => {
+      if (!bytes) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let value = Number(bytes), index = 0;
+      while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
+      return value.toFixed(index ? 1 : 0) + ' ' + units[index];
+    };
     function renderRetention(retention) {
-      const parts = [['Retention', retention.enabled ? 'Enabled' : 'Disabled']];
-      if (!retention.enabled) { detailRows('retention', parts); return; }
-      parts.push(['Policy', `Older than ${retention.days} day(s)`]);
-      parts.push(['Cleanup interval', `${retention.check_interval_hours} hour(s)`]);
+      const statusElement = document.getElementById("retention-status"); if (statusElement) statusElement.textContent = retention.enabled ? "Enabled" : "Disabled"; if (statusElement) statusElement.className = "value " + (retention.enabled ? "good" : "warn");
+      const parts = [["Retention", retention.enabled ? "Enabled" : "Disabled"]];
+      if (!retention.enabled) { detailRows("retention", parts); return; }
+      parts.push(["Policy", `Older than ${retention.days} day(s)`]);
+      parts.push(["Cleanup interval", `${retention.check_interval_hours} hour(s)`]);
       if (retention.last_run_at) {
-        parts.push(['Last cleanup', timestamp(retention.last_run_at)]);
-        parts.push(['Recordings removed', retention.deleted]);
-        parts.push(['Space reclaimed', retention.reclaimed_size]);
-        parts.push(['Cutoff', timestamp(retention.cutoff_at)]);
-      } else parts.push(['Last cleanup', 'No cleanup run yet']);
-      parts.push(['Next cleanup', timestamp(retention.next_run_at)]);
-      detailRows('retention', parts);
+        parts.push(["Last cleanup", timestamp(retention.last_run_at)]);
+        parts.push(["Recordings removed", retention.deleted]);
+        parts.push(["Space reclaimed", retention.reclaimed_size]);
+        parts.push(["Cutoff", timestamp(retention.cutoff_at)]);
+      } else parts.push(["Last cleanup", "No cleanup run yet"]);
+      parts.push(["Next cleanup", timestamp(retention.next_run_at)]);
+      detailRows("retention", parts);
     }
     async function refresh() {
       const revision = settingsRevision;
       try {
-        const response = await fetch('/api/status');
-        if (response.status === 401) { location.replace('/login'); return; }
+        const response = await fetch("/api/status");
+        if (response.status === 401) { location.replace("/login"); return; }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const status = await response.json();
         if (revision !== settingsRevision || loggingSaving) return;
-        document.getElementById('subtitle').textContent = `v${status.exporter.version} · started ${timestamp(status.exporter.started_at)}`;
-        setState('frigate', status.connections.frigate);
-        setState('mqtt', status.connections.mqtt);
+        setText("subtitle", `v${status.exporter.version} · started ${timestamp(status.exporter.started_at)}`);
+        setState("frigate", status.connections.frigate);
+        setState("mqtt", status.connections.mqtt);
         const pending = status.queue.pending;
-        document.getElementById('queue').textContent = pending === 0 ? 'Queue empty' : `${pending} review${pending === 1 ? '' : 's'} waiting`;
-        document.getElementById('storage').textContent = status.storage ? `${status.storage.total_size} (${status.storage.file_count} files)` : 'Scanning…';
+        setText("queue", pending === 0 ? "Queue empty" : `${pending} review${pending === 1 ? "" : "s"} waiting`);
+        setText("storage", status.storage ? `${status.storage.total_size} (${status.storage.file_count} files)` : "Scanning…");
         renderRetention(status.retention);
+        const reconciliation = status.reconciliation || {};
+        const reconciliationState = !reconciliation.enabled ? "Disabled" : reconciliation.state === "success" ? "Success" : reconciliation.state === "error" ? "Error" : "Pending";
+        const reconciliationElement = document.getElementById("reconciliation-status");
+        if (reconciliationElement) reconciliationElement.textContent = reconciliationState;
+        if (reconciliationElement) reconciliationElement.className = "value " + (reconciliation.state === "success" ? "good" : reconciliation.state === "error" ? "bad" : "warn");
+        detailRows("reconciliation-detail", [
+          ["Last run", timestamp(reconciliation.last_run_at)],
+          ["Last success", timestamp(reconciliation.last_success_at)],
+          ["Discovered", reconciliation.discovered || 0],
+          ["Processed", reconciliation.queued || 0],
+          ["Pending", reconciliation.pending || 0],
+          ["Result", reconciliation.state === "success" ? "All reconciled successfully; no items queued" : reconciliation.state === "error" ? "Failed — see error below" : "Processing"],
+          ["Last error", reconciliation.last_error || "None"]
+        ]);
         if (!loggingEdited && !loggingSaving) {
-          document.getElementById('log-level').value = status.logging.level;
-          document.getElementById('http-logs').checked = status.logging.http_logs;
+          document.getElementById("log-level").value = status.logging.level;
+          document.getElementById("http-logs").checked = status.logging.http_logs;
         }
 
         const workers = document.getElementById('workers');
-        workers.replaceChildren(...status.workers.map(worker => {
+        if (workers) workers.replaceChildren(...status.workers.map(worker => {
           const row = document.createElement('tr');
           const activity = worker.review_id ? `${worker.camera} · ${worker.review_id}` : 'Idle';
           const result = worker.last_error || worker.last_result || '—';
@@ -412,7 +447,7 @@ _DASHBOARD_HTML = """<!doctype html>
         }));
 
         const logs = document.getElementById('logs');
-        logs.replaceChildren(...status.logs.slice().reverse().map(entry => {
+        if (logs) logs.replaceChildren(...status.logs.slice().reverse().map(entry => {
           const row = document.createElement('tr');
           addCell(row, timestamp(entry.timestamp));
           const level = addCell(row, entry.level); level.className = `log-${entry.level.toLowerCase()}`;
@@ -421,10 +456,11 @@ _DASHBOARD_HTML = """<!doctype html>
         if (!status.logs.length) {
           const row = document.createElement('tr');
           const cell = addCell(row, 'No recent entries match this log level. Waiting for new events…');
-          cell.colSpan = 4; logs.append(row);
+          cell.colSpan = 4; if (logs) logs.append(row);
         }
-      } catch (_) {
-        document.getElementById('subtitle').textContent = 'Dashboard connection failed. Retrying…';
+      } catch (error) {
+        console.error("Dashboard refresh failed", error);
+        setText("subtitle", "Dashboard error: " + (error.message || "connection failed") + ". Retrying…");
       }
     }
     refresh(); setInterval(refresh, 2000);

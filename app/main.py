@@ -15,9 +15,11 @@ from app.models.review import Review
 from app.queue.review_queue import ReviewQueue
 from app.services.dashboard import DashboardServer
 from app.services.review_filter import ReviewFilter
+from app.services.review_store import ReviewStore
 from app.services.runtime_status import RuntimeStatus
 from app.services.storage import summarize_export_storage
 from app.workers.export_worker import ExportWorker
+from app.workers.reconciliation_worker import ReconciliationWorker
 from app.workers.retention_worker import RetentionWorker
 
 logger = logging.getLogger("exporter")
@@ -36,6 +38,7 @@ class StartupError(RuntimeError):
 async def handle_review_message(
     message: aiomqtt.Message,
     review_filter: ReviewFilter,
+    store: ReviewStore | None = None,
 ) -> None:
     try:
         payload = json.loads(message.payload.decode())
@@ -66,6 +69,12 @@ async def handle_review_message(
         review.id,
         review.camera,
     )
+
+    if store is not None and (
+        not store.queue_if_needed(review) or not store.mark_queued(review.id)
+    ):
+        logger.debug("Review %s is already tracked", review.id)
+        return
 
     await review_queue.put(review)
 
@@ -106,6 +115,7 @@ async def async_main() -> None:
             cfg.dashboard.username or "",
             cfg.dashboard.password or "",
         ],
+        history_path=Path(cfg.export.output) / ".frigate-exporter-dashboard-history.json",
     )
     status.configure_retention(
         enabled=cfg.retention.enabled,
@@ -118,15 +128,31 @@ async def async_main() -> None:
     frigate = FrigateClient(cfg.frigate)
     mqtt = MQTTClient(cfg.mqtt)
     review_filter = ReviewFilter(cfg.filters)
+    review_store = ReviewStore(Path(cfg.export.output))
+    review_store.initialize()
     dashboard = DashboardServer(cfg.dashboard, status, review_queue)
+    reconciliation_worker = ReconciliationWorker(
+        cfg.reconciliation, frigate, review_queue, review_store, status
+    )
 
-    mqtt.set_connection_callback(status.set_mqtt_state)
-    frigate.set_connection_callback(status.set_frigate_state)
+    def on_mqtt_state(state: str, error: str | None = None) -> None:
+        status.set_mqtt_state(state, error)
+        if state == "connected":
+            reconciliation_worker.trigger_reconcile("MQTT reconnect")
+
+    def on_frigate_state(state: str, error: str | None = None) -> None:
+        status.set_frigate_state(state, error)
+        if state == "connected":
+            reconciliation_worker.trigger_reconcile("Frigate reconnect")
+
+    mqtt.set_connection_callback(on_mqtt_state)
+    frigate.set_connection_callback(on_frigate_state)
 
     mqtt.set_message_callback(
         lambda message: handle_review_message(
             message,
             review_filter,
+            review_store,
         )
     )
 
@@ -229,6 +255,7 @@ async def async_main() -> None:
                     frigate=frigate,
                     config=cfg,
                     status=status,
+                    store=review_store,
                 ).run(),
                 name=f"export-worker-{i + 1}",
             )
@@ -243,6 +270,10 @@ async def async_main() -> None:
             monitor_frigate(frigate, status),
             name="frigate-health-monitor",
         )
+        reconciliation_task = asyncio.create_task(
+            reconciliation_worker.run(),
+            name="review-reconciliation",
+        )
 
         await mqtt.listen()
 
@@ -256,6 +287,10 @@ async def async_main() -> None:
         if monitor_task is not None:
             monitor_task.cancel()
             await asyncio.gather(monitor_task, return_exceptions=True)
+        reconciliation_task = locals().get("reconciliation_task")
+        if reconciliation_task is not None:
+            reconciliation_task.cancel()
+            await asyncio.gather(reconciliation_task, return_exceptions=True)
         await dashboard.stop()
         await mqtt.disconnect()
         await frigate.disconnect()

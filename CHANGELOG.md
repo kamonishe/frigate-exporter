@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.6] - Unreleased
+
+### Added
+
+- Periodically reconcile recent Frigate reviews through the API to recover events missed during MQTT outages or exporter restarts.
+- Persist review processing state in the export directory to suppress duplicate exports and retry failed work.
+- Show reconciliation activity, queue counts, last successful run, and errors in the dashboard.
+
 ## [1.0.5] - 2026-10-01
 
 ### Added

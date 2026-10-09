@@ -32,5 +32,10 @@ filters:
 dashboard:
   enabled: true
 
+reconciliation:
+  enabled: true
+  interval_minutes: 10
+  lookback_days: 2
+
 logging:
   level: INFO

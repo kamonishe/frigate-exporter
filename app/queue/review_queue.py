@@ -25,6 +25,10 @@ class ReviewQueue:
         """
         return await self._queue.get()
 
+    async def join(self) -> None:
+        """Wait until all queued reviews have been processed."""
+        await self._queue.join()
+
     def task_done(self) -> None:
         """
         Mark the current review as processed.

@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from datetime import datetime
 
 import aiohttp
 
 from app.models.config import FrigateConfig
+from app.models.review import Review
 
 logger = logging.getLogger("frigate")
 
@@ -191,6 +193,40 @@ class FrigateClient:
             )
 
         return response
+
+    @staticmethod
+    def _review_timestamp(value: object) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            return datetime.fromisoformat(value).timestamp()
+        raise ValueError(f"Unsupported review timestamp: {value!r}")
+
+    async def list_reviews(
+        self,
+        *,
+        after: float,
+        before: float,
+    ) -> list[Review]:
+        response = await self._request(
+            "GET",
+            "/api/review",
+            params={
+                "after": int(after),
+                "before": int(before),
+                "limit": 1000,
+            },
+        )
+        payload = await response.json()
+        reviews = []
+        for item in payload:
+            if not item.get("end_time"):
+                continue
+            item = dict(item)
+            item["start_time"] = self._review_timestamp(item["start_time"])
+            item["end_time"] = self._review_timestamp(item["end_time"])
+            reviews.append(Review.model_validate(item))
+        return reviews
 
     async def version(self) -> str:
         response = await self._request(

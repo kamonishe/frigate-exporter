@@ -10,6 +10,7 @@ from app.clients.frigate import FrigateClient
 from app.models.config import Config
 from app.models.review import Review
 from app.queue.review_queue import ReviewQueue
+from app.services.review_store import ReviewStore
 from app.services.runtime_status import RuntimeStatus
 from app.services.storage import summarize_export_storage
 
@@ -28,12 +29,14 @@ class ExportWorker:
         frigate: FrigateClient,
         config: Config,
         status: RuntimeStatus,
+        store: ReviewStore | None = None,
     ) -> None:
         self._worker_id = worker_id
         self._queue = queue
         self._frigate = frigate
         self._config = config
         self._status = status
+        self._store = store
 
         self._output_dir = Path(
             self._config.export.output
@@ -53,6 +56,9 @@ class ExportWorker:
             error: str | None = None
 
             try:
+                if self._store is not None:
+                    self._store.claim(review.id)
+
                 logger.debug("----------------------------------------")
                 logger.debug(
                     "Worker #%d processing review %s",
@@ -213,6 +219,9 @@ class ExportWorker:
 
                     logger.debug("----------------------------------------")
 
+                    if self._store is not None:
+                        self._store.complete(review.id)
+
                     break
 
             except Exception as exc:
@@ -222,12 +231,18 @@ class ExportWorker:
                     review.id,
                 )
                 error = str(exc)
+                if self._store is not None:
+                    self._store.fail(review.id, error)
 
             finally:
                 self._status.set_worker_idle(
                     self._worker_id,
                     error=error,
                 )
+                if self._store is not None:
+                    summary = self._store.summary()
+                    pending = sum(summary.values()) - summary.get("completed", 0)
+                    self._status.update_reconciliation_queue(pending)
                 self._queue.task_done()
 
     def _copy_with_progress(

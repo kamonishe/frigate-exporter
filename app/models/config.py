@@ -48,6 +48,12 @@ class DashboardConfig(BaseModel):
     password: str | None = None
 
 
+class ReconciliationConfig(BaseModel):
+    enabled: bool = True
+    interval_minutes: int = Field(10, ge=1)
+    lookback_days: int = Field(2, ge=1)
+
+
 class Config(BaseModel):
     frigate: FrigateConfig
     mqtt: MQTTConfig
@@ -57,4 +63,7 @@ class Config(BaseModel):
     logging: LoggingConfig
     dashboard: DashboardConfig = Field(
         default_factory=DashboardConfig
+    )
+    reconciliation: ReconciliationConfig = Field(
+        default_factory=ReconciliationConfig
     )

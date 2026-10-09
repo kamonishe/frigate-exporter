@@ -93,6 +93,11 @@ The dashboard has a login page and a Sign out button. Browser sessions expire af
 
 When enabled, the retention worker removes exported `.mp4` files older than the configured number of days.
 
+### Review reconciliation
+
+Reconciliation is enabled by default. Every `interval_minutes`, the exporter asks Frigate for completed reviews from the previous `lookback_days` and queues any review not already recorded as completed. Review state is stored in `.frigate-exporter-reviews.sqlite3` beneath `export.output`, so MQTT duplicates and exporter restarts do not create duplicate work. Set `reconciliation.enabled: false` to disable the recovery pass.
+
+
 ## Logging Levels
 
 | Level | Description |
