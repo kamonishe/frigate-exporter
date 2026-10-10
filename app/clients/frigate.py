@@ -53,7 +53,9 @@ class FrigateClient:
         )
 
         connector = aiohttp.TCPConnector(
-            ssl=self._config.verify_ssl
+            ssl=self._config.verify_ssl,
+            limit=20,
+            force_close=True,
         )
 
         cookie_jar = aiohttp.CookieJar(
@@ -229,25 +231,44 @@ class FrigateClient:
         after: float,
         before: float,
     ) -> list[Review]:
-        response = await self._request(
-            "GET",
-            "/api/review",
-            params={
-                "after": int(after),
-                "before": int(before),
-                "limit": 1000,
-            },
-        )
-        payload = await self._read_json(response)
-        reviews = []
-        for item in payload:
-            if not item.get("end_time"):
-                continue
-            item = dict(item)
-            item["start_time"] = self._review_timestamp(item["start_time"])
-            item["end_time"] = self._review_timestamp(item["end_time"])
-            reviews.append(Review.model_validate(item))
-        return reviews
+        page_size = 1000
+        cursor = before
+        reviews_by_id: dict[str, Review] = {}
+
+        for _ in range(100):
+            response = await self._request(
+                "GET",
+                "/api/review",
+                params={
+                    "after": int(after),
+                    "before": int(cursor),
+                    "limit": page_size,
+                },
+            )
+            payload = await self._read_json(response)
+            if not payload:
+                break
+
+            page: list[Review] = []
+            for item in payload:
+                if not item.get("end_time"):
+                    continue
+                item = dict(item)
+                item["start_time"] = self._review_timestamp(item["start_time"])
+                item["end_time"] = self._review_timestamp(item["end_time"])
+                review = Review.model_validate(item)
+                reviews_by_id[review.id] = review
+                page.append(review)
+
+            if len(payload) < page_size or not page:
+                break
+            oldest = min(review.start_time for review in page)
+            if oldest >= cursor:
+                logger.warning("Frigate review pagination stopped because the cursor did not advance")
+                break
+            cursor = oldest - 0.001
+
+        return list(reviews_by_id.values())
 
     async def version(self) -> str:
         response = await self._request(

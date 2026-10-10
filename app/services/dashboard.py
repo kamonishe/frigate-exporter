@@ -399,10 +399,15 @@ _DASHBOARD_HTML = """<!doctype html>
       parts.push(["Next cleanup", timestamp(retention.next_run_at)]);
       detailRows("retention", parts);
     }
+    let refreshInFlight = false;
     async function refresh() {
+      if (refreshInFlight) return;
+      refreshInFlight = true;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
       const revision = settingsRevision;
       try {
-        const response = await fetch("/api/status");
+        const response = await fetch("/api/status", {signal: controller.signal});
         if (response.status === 401) { location.replace("/login"); return; }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const status = await response.json();
@@ -461,6 +466,9 @@ _DASHBOARD_HTML = """<!doctype html>
       } catch (error) {
         console.error("Dashboard refresh failed", error);
         setText("subtitle", "Dashboard error: " + (error.message || "connection failed") + ". Retrying…");
+      } finally {
+        clearTimeout(timeout);
+        refreshInFlight = false;
       }
     }
     refresh(); setInterval(refresh, 2000);

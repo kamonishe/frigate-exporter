@@ -1,4 +1,7 @@
+import gc
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -11,6 +14,33 @@ def review(review_id: str = "r1") -> Review:
 
 
 class ReviewStoreTests(unittest.TestCase):
+    @unittest.skipUnless(Path("/proc/self/fd").exists(), "requires Linux descriptor accounting")
+    def test_burst_closes_connections_without_garbage_collection(self) -> None:
+        gc.collect()
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                baseline = len(os.listdir("/proc/self/fd"))
+                store = ReviewStore(Path(directory))
+                store.initialize()
+                for index in range(1100):
+                    item = review(str(index))
+                    self.assertTrue(store.queue_if_needed(item))
+                    self.assertTrue(store.mark_queued(item.id))
+                    self.assertFalse(store.queue_if_needed(item))
+                    store.claim(item.id)
+                    store.fail(item.id, "retry", retry_after=0)
+                    store.due_reviews()
+                    store.complete(item.id)
+                    store.summary()
+                self.assertEqual(store.summary(), {"completed": 1100})
+                self.assertLessEqual(len(os.listdir("/proc/self/fd")), baseline + 2)
+        finally:
+            if was_enabled:
+                gc.enable()
+            gc.collect()
+
     def test_lifecycle_and_duplicate_suppression(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ReviewStore(Path(directory))
@@ -34,6 +64,25 @@ class ReviewStoreTests(unittest.TestCase):
             store.claim(item.id)
             store.initialize()
             self.assertEqual(store.due_reviews()[0].id, item.id)
+
+    def test_queued_review_is_requeued_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReviewStore(Path(directory))
+            store.initialize()
+            item = review()
+            store.queue_if_needed(item)
+            store.mark_queued(item.id)
+            store.initialize()
+            self.assertEqual(store.due_reviews()[0].id, item.id)
+
+    def test_existing_exports_create_reconciliation_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "existing.mp4").touch()
+            before = time.time()
+            store = ReviewStore(output)
+            store.initialize()
+            self.assertGreaterEqual(store.reconciliation_cutoff, before)
 
     def test_failed_review_becomes_due_after_retry_delay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -2,13 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.0.7] - 2026-10-09
+## [1.0.6] - 2026-10-10
 
 ### Fixed
 
-- Release Frigate HTTP responses on authentication, retry, error, and normal API paths to prevent file-descriptor exhaustion and dashboard socket failures.
+- Handle container termination signals and cancel background workers before closing shared clients.
+- Recover all batches of pending reviews in one reconciliation run after restart.
 
-## [1.0.6] - 2026-10-09
+- Release Frigate HTTP responses on authentication, retry, error, and normal API paths to prevent file-descriptor exhaustion and dashboard socket failures.
+- Establish a first-run reconciliation baseline beside existing exports, paginate large Frigate review histories, and recover queued reviews after restart.
+
+
+- Explicitly close review-state SQLite connections after each operation to prevent descriptor exhaustion during large review backlogs.
 
 ### Added
 

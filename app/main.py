@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -283,6 +284,13 @@ async def async_main() -> None:
         )
 
     finally:
+        tasks = list(locals().get("worker_tasks", []))
+        retention = locals().get("retention_task")
+        if retention is not None:
+            tasks.append(retention)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         monitor_task = locals().get("frigate_monitor_task")
         if monitor_task is not None:
             monitor_task.cancel()
@@ -298,9 +306,32 @@ async def async_main() -> None:
         logger.debug("Shutdown complete")
 
 
+async def run_until_stopped() -> None:
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(async_main())
+    stopping = False
+
+    def stop() -> None:
+        nonlocal stopping
+        if not stopping:
+            stopping = True
+            task.cancel()
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, stop)
+    try:
+        await task
+    except asyncio.CancelledError:
+        if not stopping:
+            raise
+    finally:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(signum)
+
+
 def main() -> None:
     try:
-        asyncio.run(async_main())
+        asyncio.run(run_until_stopped())
 
     except StartupError as exc:
         logger.error(str(exc))

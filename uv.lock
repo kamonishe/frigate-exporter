@@ -113,7 +113,7 @@ wheels = [
 
 [[package]]
 name = "frigate-exporter"
-version = "1.0.7"
+version = "1.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

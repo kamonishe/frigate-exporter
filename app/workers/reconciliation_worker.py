@@ -46,7 +46,10 @@ class ReconciliationWorker:
     async def reconcile(self) -> None:
         now = time.time()
         reviews = await self._frigate.list_reviews(
-            after=now - self._config.lookback_days * 86400,
+            after=max(
+                now - self._config.lookback_days * 86400,
+                self._store.reconciliation_cutoff,
+            ),
             before=now,
         )
         queued = 0
@@ -54,16 +57,20 @@ class ReconciliationWorker:
             if self._store.queue_if_needed(review) and self._store.mark_queued(review.id):
                 await self._queue.put(review)
                 queued += 1
-        for review in self._store.due_reviews():
-            if self._store.mark_queued(review.id):
-                await self._queue.put(review)
-                queued += 1
+        while batch := self._store.due_reviews():
+            for review in batch:
+                if self._store.mark_queued(review.id):
+                    await self._queue.put(review)
+                    queued += 1
         await self._queue.join()
         summary = self._store.summary()
         pending = sum(summary.values()) - summary.get("completed", 0)
         self._status.set_reconciliation_result(
             discovered=len(reviews), queued=queued, pending=pending
         )
+        state_summary = ", ".join(
+            f"{state}={count}" for state, count in sorted(summary.items())
+        ) or "empty"
         if pending == 0:
             logger.info(
                 "Reconciliation successful: discovered %d review(s), processed %d, queue empty",
@@ -72,10 +79,11 @@ class ReconciliationWorker:
             )
         else:
             logger.warning(
-                "Reconciliation finished with pending reviews: discovered %d, queued %d, pending %d",
+                "Reconciliation finished with pending reviews: discovered %d, newly queued %d, pending %d (%s)",
                 len(reviews),
                 queued,
                 pending,
+                state_summary,
             )
 
     async def run(self) -> None:
