@@ -28,8 +28,14 @@ logger = logging.getLogger("exporter")
 FRIGATE_CONNECT_RETRIES = 60
 FRIGATE_CONNECT_RETRY_DELAY = 5
 FRIGATE_HEALTH_INTERVAL = 15
+MQTT_HEALTH_INTERVAL = 15
 
 review_queue = ReviewQueue()
+
+
+def request_process_restart() -> None:
+    """Ask the signal handler to perform a graceful container restart."""
+    signal.raise_signal(signal.SIGTERM)
 
 
 class StartupError(RuntimeError):
@@ -102,6 +108,28 @@ async def monitor_frigate(
         await asyncio.sleep(FRIGATE_HEALTH_INTERVAL)
 
 
+async def monitor_mqtt(
+    mqtt: MQTTClient,
+    status: RuntimeStatus,
+) -> None:
+    """Probe MQTT so silent network failures become visible promptly."""
+    while True:
+        if not mqtt.is_connected:
+            await asyncio.sleep(MQTT_HEALTH_INTERVAL)
+            continue
+
+        try:
+            await mqtt.check_connection()
+            status.set_mqtt_state("connected")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            status.set_mqtt_state("reconnecting", str(exc))
+            logger.warning("MQTT health check failed: %s", exc)
+            await mqtt.request_reconnect(str(exc))
+        await asyncio.sleep(MQTT_HEALTH_INTERVAL)
+
+
 async def async_main() -> None:
     cfg = load_config()
 
@@ -131,7 +159,12 @@ async def async_main() -> None:
     review_filter = ReviewFilter(cfg.filters)
     review_store = ReviewStore(Path(cfg.export.output))
     review_store.initialize()
-    dashboard = DashboardServer(cfg.dashboard, status, review_queue)
+    dashboard = DashboardServer(
+        cfg.dashboard,
+        status,
+        review_queue,
+        restart_callback=request_process_restart,
+    )
     reconciliation_worker = ReconciliationWorker(
         cfg.reconciliation, frigate, review_queue, review_store, status
     )
@@ -271,6 +304,10 @@ async def async_main() -> None:
             monitor_frigate(frigate, status),
             name="frigate-health-monitor",
         )
+        mqtt_monitor_task = asyncio.create_task(
+            monitor_mqtt(mqtt, status),
+            name="mqtt-health-monitor",
+        )
         reconciliation_task = asyncio.create_task(
             reconciliation_worker.run(),
             name="review-reconciliation",
@@ -295,6 +332,10 @@ async def async_main() -> None:
         if monitor_task is not None:
             monitor_task.cancel()
             await asyncio.gather(monitor_task, return_exceptions=True)
+        mqtt_monitor_task = locals().get("mqtt_monitor_task")
+        if mqtt_monitor_task is not None:
+            mqtt_monitor_task.cancel()
+            await asyncio.gather(mqtt_monitor_task, return_exceptions=True)
         reconciliation_task = locals().get("reconciliation_task")
         if reconciliation_task is not None:
             reconciliation_task.cancel()

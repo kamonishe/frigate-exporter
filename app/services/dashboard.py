@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hmac
 import logging
 import secrets
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from aiohttp import web
@@ -14,6 +16,8 @@ from app.core.logger import change_logging, logging_settings
 from app.models.config import DashboardConfig
 from app.queue.review_queue import ReviewQueue
 from app.services.runtime_status import RuntimeStatus
+
+logger = logging.getLogger("frigate_exporter.dashboard")
 
 
 class DashboardServer:
@@ -24,10 +28,13 @@ class DashboardServer:
         config: DashboardConfig,
         status: RuntimeStatus,
         queue: ReviewQueue,
+        restart_callback: Callable[[], None] | None = None,
     ) -> None:
         self._config = config
         self._status = status
         self._queue = queue
+        self._restart_callback = restart_callback
+        self._restart_requested = False
         self._runner: web.AppRunner | None = None
         self._sessions: dict[str, float] = {}
 
@@ -37,6 +44,7 @@ class DashboardServer:
         app.router.add_get("/api/status", self._status_response)
         app.router.add_get("/healthz", self._health)
         app.router.add_post("/api/logging", self._logging_response)
+        app.router.add_post("/api/restart", self._restart_response)
         app.router.add_get("/login", self._login_page)
         app.router.add_post("/api/login", self._login)
         app.router.add_post("/api/logout", self._logout)
@@ -171,6 +179,22 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="Invalid logging settings") from None
         return web.json_response(logging_settings())
 
+    async def _restart_response(self, request: web.Request) -> web.Response:
+        self._require_auth(request)
+        self._require_dashboard_request(request)
+        if self._restart_callback is None:
+            raise web.HTTPNotImplemented(text="Restart is not available")
+        if self._restart_requested:
+            raise web.HTTPTooManyRequests(text="Restart already requested")
+
+        self._restart_requested = True
+        logger.warning("Exporter restart requested from dashboard")
+        asyncio.get_running_loop().call_later(0.1, self._restart_callback)
+        return web.json_response(
+            {"ok": True, "message": "Exporter restart requested"},
+            status=202,
+        )
+
     async def _health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
 
@@ -245,6 +269,9 @@ _DASHBOARD_HTML = """<!doctype html>
     .wide { grid-column: 1 / -1; }
     .detail-row { display: grid; grid-template-columns: minmax(100px, .7fr) 1fr; gap: .8rem; padding: .55rem 0; margin: 0; border-top: 1px solid #374151; }
     dt { color: #9ca3af; } dd { margin: 0; overflow-wrap: anywhere; }
+    .actions { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; margin: .5rem 0 1rem; }
+    .actions .danger { border-color: #f87171; color: #fecaca; }
+    .actions button:disabled { cursor: wait; opacity: .65; }
     .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; }
     .workers-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: .75rem; margin-top: 2rem; }
     .workers-heading h2 { margin: 0; }
@@ -279,7 +306,7 @@ _DASHBOARD_HTML = """<!doctype html>
       <img src="/logo.png" alt="Clip Courier pigeon carrying a video envelope" width="72" height="72">
       <h1>Frigate Exporter</h1>
     </div>
-    <button type="button" id="logout">Sign out</button>
+    <div class="actions"><button type="button" id="restart" class="danger">Restart exporter</button><button type="button" id="logout">Sign out</button><span id="restart-feedback" role="status"></span></div>
     <p class="muted" id="subtitle">Loading status…</p>
     <section class="grid">
       <article class="card"><div>Frigate</div><div class="value" id="frigate">—</div><div class="detail" id="frigate-detail"></div></article>
@@ -319,6 +346,22 @@ _DASHBOARD_HTML = """<!doctype html>
     document.getElementById('logout').addEventListener('click', async () => {
       const response = await fetch('/api/logout', {method: 'POST', headers: {'X-Exporter-Request': 'dashboard'}});
       if (response.ok) location.replace('/login');
+    });
+    document.getElementById('restart').addEventListener('click', async () => {
+      if (!window.confirm('Restart the exporter now? Active exports may be retried after startup.')) return;
+      const button = document.getElementById('restart');
+      const feedback = document.getElementById('restart-feedback');
+      button.disabled = true;
+      feedback.textContent = 'Restarting…';
+      try {
+        const response = await fetch('/api/restart', {method: 'POST', headers: {'X-Exporter-Request': 'dashboard'}});
+        if (response.status === 401) { location.replace('/login'); return; }
+        if (response.status !== 202) throw new Error(`HTTP ${response.status}`);
+        feedback.textContent = 'Restart requested. Waiting for the exporter to return…';
+      } catch (_) {
+        button.disabled = false;
+        feedback.textContent = 'Restart failed. Check exporter logs.';
+      }
     });
     async function saveLogging() {
       loggingEdited = true;

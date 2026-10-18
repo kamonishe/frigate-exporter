@@ -83,11 +83,11 @@ The exporter automatically reconnects to MQTT after temporary connection failure
 
 The log-level dropdown and **Enable HTTP logs (aiohttp)** checkbox apply automatically to dashboard and container logging. Recent entries are filtered immediately. HTTP logs are disabled by default. These temporary settings reset on restart to the configured logging level. Frigate, MQTT, and retention details are displayed in labeled rows.
 
-The read-only dashboard listens on port `5050` by default. The supplied Compose file publishes `5050:5050`, making it available at `http://HOST_PRIVATE_IP:5050`. Sign in using the `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` environment variables.
+The authenticated dashboard listens on port `5050` by default. The supplied Compose file publishes `5050:5050`, making it available at `http://HOST_PRIVATE_IP:5050`. Sign in using the `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` environment variables.
 
 The dashboard shows detailed MQTT and Frigate connection state, queue depth, worker phases and export progress, recent exporter logs, and combined exported-storage and retention information. Its `/healthz` endpoint supports the supplied Docker health check. Set `dashboard.enabled: false` to disable the dashboard.
 
-The dashboard has a login page and a Sign out button. Browser sessions expire after 12 hours or when the exporter restarts. HTTP Basic authentication remains available for API clients, without browser login popups. The application does not provide TLS. Keep port `5050` on a trusted private network or place the dashboard behind an HTTPS reverse proxy. Do not expose it directly to the public internet.
+The dashboard has a login page, a **Restart exporter** button, and a Sign out button. Restart requires confirmation, sends a graceful shutdown signal, and relies on the container restart policy to bring the exporter back. Browser sessions expire after 12 hours or when the exporter restarts. HTTP Basic authentication remains available for API clients, without browser login popups. The application does not provide TLS. Keep port `5050` on a trusted private network or place the dashboard behind an HTTPS reverse proxy. Do not expose it directly to the public internet.
 
 ## Retention
 

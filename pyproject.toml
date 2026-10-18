@@ -1,6 +1,6 @@
 [project]
 name = "frigate-exporter"
-version = "1.0.6"
+version = "1.0.7"
 description = "Exports completed Frigate review events to a local folder."
 readme = "README.md"
 requires-python = ">=3.14"

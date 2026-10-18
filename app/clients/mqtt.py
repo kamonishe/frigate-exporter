@@ -11,6 +11,7 @@ from app.models.config import MQTTConfig
 logger = logging.getLogger("frigate_exporter.mqtt")
 
 RECONNECT_DELAY = 5
+MQTT_HEALTH_TIMEOUT = 10
 
 
 class MQTTClient:
@@ -42,6 +43,11 @@ class MQTTClient:
     ) -> None:
         """Register a callback for MQTT connection state changes."""
         self._connection_callback = callback
+
+    @property
+    def is_connected(self) -> bool:
+        """Return whether an MQTT session is currently established."""
+        return self._client is not None
 
     def _notify_connection(
         self,
@@ -78,21 +84,33 @@ class MQTTClient:
             self._config.port,
         )
 
-    async def subscribe(self) -> None:
+    async def subscribe(
+        self,
+        *,
+        announce: bool = True,
+        timeout: float | None = None,
+    ) -> None:
         if self._client is None:
             raise RuntimeError("MQTT client has not been connected.")
 
-        logger.debug(
-            "Subscribing to '%s'",
-            self._config.topic,
-        )
+        if announce:
+            logger.debug("Subscribing to '%s'", self._config.topic)
 
-        await self._client.subscribe(self._config.topic)
+        await self._client.subscribe(self._config.topic, timeout=timeout)
 
-        logger.info(
-            "Subscribed to '%s'",
-            self._config.topic,
-        )
+        if announce:
+            logger.info("Subscribed to '%s'", self._config.topic)
+
+    async def check_connection(self) -> None:
+        """Confirm that the broker responds to a control request."""
+        if self._client is None:
+            raise RuntimeError("MQTT client is not connected.")
+        await self.subscribe(announce=False, timeout=MQTT_HEALTH_TIMEOUT)
+
+    async def request_reconnect(self, error: str) -> None:
+        """Close an unresponsive client so the listener reconnects."""
+        await self._close_client()
+        self._notify_connection("reconnecting", error)
 
     async def _close_client(self) -> None:
         client = self._client

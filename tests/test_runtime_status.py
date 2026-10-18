@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import tempfile
@@ -113,6 +114,31 @@ class RuntimeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(idle["state"], "idle")
         self.assertIsNotNone(idle["last_completed_at"])
         self.assertEqual(idle["last_result"], "success")
+
+    async def test_dashboard_restart_is_authenticated_and_rate_limited(self) -> None:
+        status = RuntimeStatus("frigate/reviews", 1)
+        restarted = asyncio.Event()
+        dashboard = DashboardServer(
+            DashboardConfig(username="viewer", password="secret"),
+            status,
+            ReviewQueue(),
+            restart_callback=restarted.set,
+        )
+        authorization = base64.b64encode(b"viewer:secret").decode()
+        request = SimpleNamespace(
+            headers={
+                "Authorization": f"Basic {authorization}",
+                "X-Exporter-Request": "dashboard",
+            },
+            cookies={},
+        )
+
+        response = await dashboard._restart_response(request)
+        self.assertEqual(response.status, 202)
+        await asyncio.wait_for(restarted.wait(), timeout=1)
+
+        with self.assertRaises(web.HTTPTooManyRequests):
+            await dashboard._restart_response(request)
 
     async def test_dashboard_requires_auth_but_health_is_public(self) -> None:
         status = RuntimeStatus("frigate/reviews", 1)

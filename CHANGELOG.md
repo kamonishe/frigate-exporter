@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.7] - Unreleased
+
+### Added
+
+- Add an authenticated dashboard restart button with confirmation, graceful SIGTERM shutdown, and one-request rate limiting.
+- Probe MQTT health every 15 seconds and automatically reconnect and resubscribe after a stale broker connection.
+
+### Fixed
+
+- Keep dashboard MQTT status accurate during silent broker or network failures.
+
 ## [1.0.6] - 2026-10-10
 
 ### Fixed
