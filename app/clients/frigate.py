@@ -13,6 +13,10 @@ from app.models.review import Review
 logger = logging.getLogger("frigate")
 
 
+class RecordingUnavailableError(RuntimeError):
+    """Raised when Frigate has no recording for an export time range."""
+
+
 class FrigateClient:
     """
     Client responsible for all communication with Frigate.
@@ -291,13 +295,18 @@ class FrigateClient:
             end_time,
         )
 
-        response = await self._request(
-            "POST",
-            f"/api/export/{camera}/start/{start_time}/end/{end_time}",
-            json={
-                "playback": "realtime",
-            },
-        )
+        try:
+            response = await self._request(
+                "POST",
+                f"/api/export/{camera}/start/{start_time}/end/{end_time}",
+                json={
+                    "playback": "realtime",
+                },
+            )
+        except RuntimeError as exc:
+            if "No recordings found for time range" in str(exc):
+                raise RecordingUnavailableError(str(exc)) from exc
+            raise
 
         return await self._read_json(response)
 

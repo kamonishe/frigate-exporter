@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.models.config import Config
+from app.services.review_store import ReviewStore
 from app.services.runtime_status import RuntimeStatus
 from app.services.storage import format_bytes, summarize_export_storage
 
@@ -22,15 +23,26 @@ class RetentionWorker:
         self,
         config: Config,
         status: RuntimeStatus,
+        store: ReviewStore | None = None,
     ) -> None:
         self._config = config
         self._status = status
+        self._store = store
         self._directory = Path(config.export.output)
+        self._trigger = asyncio.Event()
         self._status.configure_retention(
             enabled=config.retention.enabled,
             days=config.retention.days,
             check_interval_hours=config.retention.check_interval_hours,
         )
+
+    def trigger_cleanup(self) -> bool:
+        """Request an immediate cleanup without overlapping the scheduler."""
+        if not self._config.retention.enabled:
+            return False
+        logger.info("Scheduling manual retention cleanup")
+        self._trigger.set()
+        return True
 
     async def run(self) -> None:
         if not self._config.retention.enabled:
@@ -43,7 +55,18 @@ class RetentionWorker:
             self._config.retention.check_interval_hours,
         )
 
+        first_run = True
         while True:
+            if not first_run:
+                try:
+                    await asyncio.wait_for(
+                        self._trigger.wait(),
+                        timeout=self._config.retention.check_interval_hours * 3600,
+                    )
+                except TimeoutError:
+                    pass
+                self._trigger.clear()
+            first_run = False
             try:
                 await self.cleanup()
             except Exception:
@@ -59,9 +82,6 @@ class RetentionWorker:
                 self._config.retention.check_interval_hours,
             )
 
-            await asyncio.sleep(
-                self._config.retention.check_interval_hours * 3600
-            )
 
     async def cleanup(self) -> None:
         if not self._directory.exists():
@@ -69,9 +89,8 @@ class RetentionWorker:
                 "Retention directory does not exist: %s",
                 self._directory,
             )
-            return
-
-        logger.debug("Starting retention cleanup...")
+        else:
+            logger.debug("Starting retention cleanup...")
 
         cutoff = (
             time.time()
@@ -84,6 +103,11 @@ class RetentionWorker:
         scanned = 0
         deleted = 0
         reclaimed_bytes = 0
+        unavailable_deleted = (
+            self._store.purge_unavailable(cutoff)
+            if self._store is not None
+            else 0
+        )
 
         for file in self._directory.glob("*.mp4"):
             scanned += 1
@@ -116,7 +140,12 @@ class RetentionWorker:
             storage=storage,
             cutoff_at=datetime.fromtimestamp(cutoff, UTC).isoformat(),
             next_run_at=next_run_at.isoformat(),
+            unavailable_deleted=unavailable_deleted,
         )
+        if self._store is not None:
+            self._status.set_reconciliation_unavailable(
+                self._store.unavailable_count()
+            )
 
         if deleted == 0:
             logger.info(
@@ -133,6 +162,11 @@ class RetentionWorker:
                 format_bytes(reclaimed_bytes),
                 storage.file_count,
                 format_bytes(storage.total_bytes),
+            )
+        if unavailable_deleted:
+            logger.info(
+                "Retention removed %d unavailable review record(s) outside the retention window.",
+                unavailable_deleted,
             )
 
         logger.debug(

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock
 
-from app.clients.frigate import FrigateClient
+from app.clients.frigate import FrigateClient, RecordingUnavailableError
 from app.models.config import FrigateConfig
 
 
@@ -48,6 +48,24 @@ class FrigateClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client._request.await_count, 2)
         second_params = client._request.await_args_list[1].kwargs["params"]
         self.assertLessEqual(second_params["before"], 1000)
+
+    async def test_start_export_classifies_missing_recording(self) -> None:
+        client = FrigateClient(
+            FrigateConfig(
+                url="https://frigate",
+                username="user",
+                password="password",
+            )
+        )
+        client._request = AsyncMock(
+            side_effect=RuntimeError(
+                "POST /api/export/camera1/start/1/end/2 failed (400): "
+                '{"success":false,"message":"No recordings found for time range"}'
+            )
+        )
+
+        with self.assertRaises(RecordingUnavailableError):
+            await client.start_export("camera1", 1, 2)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 from app.models.config import Config
+from app.models.review import Review
+from app.services.review_store import ReviewStore
 from app.services.runtime_status import RuntimeStatus
 from app.workers.retention_worker import RetentionWorker
 
@@ -58,7 +60,20 @@ class RetentionWorkerTests(unittest.IsolatedAsyncioTestCase):
 
             config = make_config(directory)
             status = RuntimeStatus(config.mqtt.topic, 1)
-            worker = RetentionWorker(config, status)
+            store = ReviewStore(directory)
+            store.initialize()
+            unavailable = Review(
+                id="missing",
+                camera="cam",
+                start_time=1,
+                end_time=2,
+                severity="alert",
+                thumb_path="",
+            )
+            store.queue_if_needed(unavailable)
+            store.mark_queued(unavailable.id)
+            store.mark_unavailable(unavailable.id, "No recordings found for time range")
+            worker = RetentionWorker(config, status, store)
 
             with self.assertLogs(
                 "frigate_exporter.retention",
@@ -74,6 +89,7 @@ class RetentionWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snapshot["storage"]["total_bytes"], 2048)
             self.assertEqual(snapshot["retention"]["scanned"], 2)
             self.assertEqual(snapshot["retention"]["deleted"], 1)
+            self.assertEqual(snapshot["retention"]["unavailable_deleted"], 1)
             self.assertEqual(
                 snapshot["retention"]["reclaimed_bytes"],
                 1024,

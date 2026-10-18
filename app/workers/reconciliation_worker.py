@@ -34,14 +34,17 @@ class ReconciliationWorker:
         self._trigger = asyncio.Event()
         self._last_trigger_at = 0.0
 
-    def trigger_reconcile(self, reason: str) -> None:
-        """Request a recovery reconciliation, rate-limited to avoid storms."""
+    def trigger_reconcile(self, reason: str, *, force: bool = False) -> bool:
+        """Request a reconciliation, rate-limited unless manually forced."""
+        if not self._config.enabled:
+            return False
         now = time.monotonic()
-        if now - self._last_trigger_at < RECOVERY_RECONCILIATION_COOLDOWN:
-            return
+        if not force and now - self._last_trigger_at < RECOVERY_RECONCILIATION_COOLDOWN:
+            return False
         self._last_trigger_at = now
         logger.info("Scheduling recovery reconciliation after %s", reason)
         self._trigger.set()
+        return True
 
     async def reconcile(self) -> None:
         now = time.time()
@@ -64,18 +67,21 @@ class ReconciliationWorker:
                     queued += 1
         await self._queue.join()
         summary = self._store.summary()
-        pending = sum(summary.values()) - summary.get("completed", 0)
+        pending = self._store.retryable_count()
+        unavailable = self._store.unavailable_count()
         self._status.set_reconciliation_result(
-            discovered=len(reviews), queued=queued, pending=pending
+            discovered=len(reviews), queued=queued, pending=pending,
+            unavailable=unavailable,
         )
         state_summary = ", ".join(
             f"{state}={count}" for state, count in sorted(summary.items())
         ) or "empty"
         if pending == 0:
             logger.info(
-                "Reconciliation successful: discovered %d review(s), processed %d, queue empty",
+                "Reconciliation successful: discovered %d review(s), processed %d, retry queue empty (%d unavailable)",
                 len(reviews),
                 queued,
+                unavailable,
             )
         else:
             logger.warning(
@@ -107,11 +113,11 @@ class ReconciliationWorker:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                summary = self._store.summary()
                 self._status.set_reconciliation_result(
                     discovered=0,
                     queued=0,
-                    pending=sum(summary.values()) - summary.get("completed", 0),
+                    pending=self._store.retryable_count(),
+                    unavailable=self._store.unavailable_count(),
                     error=str(exc),
                 )
                 logger.exception("Review reconciliation failed")

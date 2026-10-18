@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.8] - 2026-10-18
+
+### Added
+
+- Add authenticated dashboard actions to run retention cleanup and review reconciliation immediately.
+- Show unavailable review counts and retention cleanup results in the dashboard.
+
+### Fixed
+
+- Treat Frigate's `No recordings found for time range` response as a terminal unavailable review instead of retrying it indefinitely.
+- Remove unavailable review records after their event leaves the configured retention period.
+- Keep unavailable reviews out of the retryable reconciliation queue.
+
+### Improved
+
+- Add consistent pointer, hover, focus, and disabled-state feedback to dashboard action buttons.
+
 ## [1.0.7] - 2026-10-18
 
 ### Added

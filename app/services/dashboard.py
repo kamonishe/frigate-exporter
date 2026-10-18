@@ -29,11 +29,15 @@ class DashboardServer:
         status: RuntimeStatus,
         queue: ReviewQueue,
         restart_callback: Callable[[], None] | None = None,
+        retention_callback: Callable[[], bool] | None = None,
+        reconciliation_callback: Callable[[], bool] | None = None,
     ) -> None:
         self._config = config
         self._status = status
         self._queue = queue
         self._restart_callback = restart_callback
+        self._retention_callback = retention_callback
+        self._reconciliation_callback = reconciliation_callback
         self._restart_requested = False
         self._runner: web.AppRunner | None = None
         self._sessions: dict[str, float] = {}
@@ -45,6 +49,8 @@ class DashboardServer:
         app.router.add_get("/healthz", self._health)
         app.router.add_post("/api/logging", self._logging_response)
         app.router.add_post("/api/restart", self._restart_response)
+        app.router.add_post("/api/retention/run", self._retention_response)
+        app.router.add_post("/api/reconciliation/run", self._reconciliation_response)
         app.router.add_get("/login", self._login_page)
         app.router.add_post("/api/login", self._login)
         app.router.add_post("/api/logout", self._logout)
@@ -195,6 +201,32 @@ class DashboardServer:
             status=202,
         )
 
+    async def _retention_response(self, request: web.Request) -> web.Response:
+        self._require_auth(request)
+        self._require_dashboard_request(request)
+        if self._retention_callback is None:
+            raise web.HTTPNotImplemented(text="Retention run is not available")
+        if not self._retention_callback():
+            raise web.HTTPConflict(text="Retention is disabled")
+        logger.info("Manual retention cleanup requested from dashboard")
+        return web.json_response(
+            {"ok": True, "message": "Retention cleanup requested"},
+            status=202,
+        )
+
+    async def _reconciliation_response(self, request: web.Request) -> web.Response:
+        self._require_auth(request)
+        self._require_dashboard_request(request)
+        if self._reconciliation_callback is None:
+            raise web.HTTPNotImplemented(text="Reconciliation run is not available")
+        if not self._reconciliation_callback():
+            raise web.HTTPConflict(text="Reconciliation is disabled")
+        logger.info("Manual reconciliation requested from dashboard")
+        return web.json_response(
+            {"ok": True, "message": "Reconciliation requested"},
+            status=202,
+        )
+
     async def _health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
 
@@ -277,6 +309,11 @@ _DASHBOARD_HTML = """<!doctype html>
     .workers-heading h2 { margin: 0; }
     .queue-summary { color: #9ca3af; font-size: .9rem; }
     select, button { background: #1f2937; color: #e5e7eb; padding: .5rem; border: 1px solid #6b7280; border-radius: .4rem; }
+    button { cursor: pointer; transition: background .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease; }
+    button:hover:not(:disabled) { background: #374151; border-color: #34d399; color: #fff; box-shadow: 0 0 0 2px rgb(52 211 153 / 20%); }
+    button:focus-visible { outline: 2px solid #34d399; outline-offset: 2px; }
+    .actions button { min-width: 7rem; }
+    .actions .danger:hover:not(:disabled) { background: #7f1d1d; border-color: #f87171; color: #fff; box-shadow: 0 0 0 2px rgb(248 113 113 / 20%); }
     #retention { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 2rem; }
     .value { font-size: 1.45rem; font-weight: 700; margin-top: .4rem; text-transform: capitalize; }
     .compact-bubbles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: .6rem; margin-top: .7rem; }
@@ -306,7 +343,7 @@ _DASHBOARD_HTML = """<!doctype html>
       <img src="/logo.png" alt="Clip Courier pigeon carrying a video envelope" width="72" height="72">
       <h1>Frigate Exporter</h1>
     </div>
-    <div class="actions"><button type="button" id="restart" class="danger">Restart exporter</button><button type="button" id="logout">Sign out</button><span id="restart-feedback" role="status"></span></div>
+    <div class="actions"><button type="button" id="restart" class="danger">Restart exporter</button><button type="button" id="run-retention">Run retention</button><button type="button" id="run-reconciliation">Run reconciliation</button><button type="button" id="logout">Sign out</button><span id="restart-feedback" role="status"></span><span id="maintenance-feedback" role="status"></span></div>
     <p class="muted" id="subtitle">Loading status…</p>
     <section class="grid">
       <article class="card"><div>Frigate</div><div class="value" id="frigate">—</div><div class="detail" id="frigate-detail"></div></article>
@@ -347,6 +384,24 @@ _DASHBOARD_HTML = """<!doctype html>
       const response = await fetch('/api/logout', {method: 'POST', headers: {'X-Exporter-Request': 'dashboard'}});
       if (response.ok) location.replace('/login');
     });
+    async function requestMaintenanceRun(buttonId, endpoint, label) {
+      const button = document.getElementById(buttonId);
+      const feedback = document.getElementById('maintenance-feedback');
+      button.disabled = true;
+      feedback.textContent = `${label} requested…`;
+      try {
+        const response = await fetch(endpoint, {method: 'POST', headers: {'X-Exporter-Request': 'dashboard'}});
+        if (response.status === 401) { location.replace('/login'); return; }
+        if (!response.ok) throw new Error(await response.text());
+        feedback.textContent = `${label} run started.`;
+      } catch (_) {
+        feedback.textContent = `${label} run failed. Check exporter status.`;
+      } finally {
+        window.setTimeout(() => { button.disabled = false; }, 1500);
+      }
+    }
+    document.getElementById('run-retention').addEventListener('click', () => requestMaintenanceRun('run-retention', '/api/retention/run', 'Retention'));
+    document.getElementById('run-reconciliation').addEventListener('click', () => requestMaintenanceRun('run-reconciliation', '/api/reconciliation/run', 'Reconciliation'));
     document.getElementById('restart').addEventListener('click', async () => {
       if (!window.confirm('Restart the exporter now? Active exports may be retried after startup.')) return;
       const button = document.getElementById('restart');
@@ -439,6 +494,7 @@ _DASHBOARD_HTML = """<!doctype html>
         parts.push(["Space reclaimed", retention.reclaimed_size]);
         parts.push(["Cutoff", timestamp(retention.cutoff_at)]);
       } else parts.push(["Last cleanup", "No cleanup run yet"]);
+      parts.push(["Unavailable reviews removed", retention.unavailable_deleted || 0]);
       parts.push(["Next cleanup", timestamp(retention.next_run_at)]);
       detailRows("retention", parts);
     }
@@ -473,7 +529,8 @@ _DASHBOARD_HTML = """<!doctype html>
           ["Discovered", reconciliation.discovered || 0],
           ["Processed", reconciliation.queued || 0],
           ["Pending", reconciliation.pending || 0],
-          ["Result", reconciliation.state === "success" ? "All reconciled successfully; no items queued" : reconciliation.state === "error" ? "Failed — see error below" : "Processing"],
+          ["Unavailable", reconciliation.unavailable || 0],
+          ["Result", reconciliation.state === "success" ? `No retryable items queued${reconciliation.unavailable ? `; ${reconciliation.unavailable} unavailable` : ""}` : reconciliation.state === "error" ? "Failed — see error below" : "Processing"],
           ["Last error", reconciliation.last_error || "None"]
         ]);
         if (!loggingEdited && !loggingSaving) {

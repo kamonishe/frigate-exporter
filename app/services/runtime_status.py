@@ -40,6 +40,7 @@ class RuntimeStatus:
             "discovered": 0,
             "queued": 0,
             "pending": 0,
+            "unavailable": 0,
         }
         self._retention: dict[str, object] = {
             "enabled": False,
@@ -52,6 +53,7 @@ class RuntimeStatus:
             "deleted": 0,
             "reclaimed_bytes": 0,
             "reclaimed_size": format_bytes(0),
+            "unavailable_deleted": 0,
         }
         self._workers = {
             worker_id: self._new_worker()
@@ -180,6 +182,7 @@ class RuntimeStatus:
         discovered: int,
         queued: int,
         pending: int,
+        unavailable: int = 0,
         error: str | None = None,
     ) -> None:
         now = self._now()
@@ -190,24 +193,29 @@ class RuntimeStatus:
                 "discovered": discovered,
                 "queued": queued,
                 "pending": pending,
+                "unavailable": unavailable,
                 "last_error": self._redact(error),
             }
         )
         if error is None:
             self._reconciliation["last_success_at"] = now
-        self._reconciliation_history.append({"epoch": time.time(), "timestamp": now, "state": self._reconciliation["state"], "discovered": discovered, "queued": queued, "pending": pending, "error": self._redact(error)})
+        self._reconciliation_history.append({"epoch": time.time(), "timestamp": now, "state": self._reconciliation["state"], "discovered": discovered, "queued": queued, "pending": pending, "unavailable": unavailable, "error": self._redact(error)})
         self._persist_history()
-    def update_reconciliation_queue(self, pending: int) -> None:
+    def update_reconciliation_queue(self, pending: int, unavailable: int | None = None) -> None:
         """Refresh reconciliation state when export workers drain the durable queue."""
         if not self._reconciliation.get("last_run_at"):
             return
         self._reconciliation["pending"] = pending
+        if unavailable is not None:
+            self._reconciliation["unavailable"] = unavailable
         if pending == 0 and self._reconciliation.get("state") == "pending":
             now = self._now()
             self._reconciliation["state"] = "success"
             self._reconciliation["last_success_at"] = now
             self._reconciliation["last_error"] = None
 
+    def set_reconciliation_unavailable(self, unavailable: int) -> None:
+        self._reconciliation["unavailable"] = unavailable
 
     def configure_retention(
         self,
@@ -315,11 +323,12 @@ class RuntimeStatus:
         storage: ExportStorageSummary,
         cutoff_at: str | None = None,
         next_run_at: str | None = None,
+        unavailable_deleted: int = 0,
     ) -> None:
         self._storage = storage
         now = self._now()
         self._record_storage(storage, now)
-        self._retention_history.append({"epoch": time.time(), "timestamp": now, "deleted": deleted, "reclaimed_bytes": reclaimed_bytes, "reclaimed_size": format_bytes(reclaimed_bytes), "scanned": scanned})
+        self._retention_history.append({"epoch": time.time(), "timestamp": now, "deleted": deleted, "reclaimed_bytes": reclaimed_bytes, "reclaimed_size": format_bytes(reclaimed_bytes), "scanned": scanned, "unavailable_deleted": unavailable_deleted})
         self._persist_history()
         self._retention.update(
             {
@@ -330,6 +339,7 @@ class RuntimeStatus:
                 "deleted": deleted,
                 "reclaimed_bytes": reclaimed_bytes,
                 "reclaimed_size": format_bytes(reclaimed_bytes),
+                "unavailable_deleted": unavailable_deleted,
             }
         )
 

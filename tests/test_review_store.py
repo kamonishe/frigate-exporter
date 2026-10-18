@@ -94,6 +94,24 @@ class ReviewStoreTests(unittest.TestCase):
             store.fail(item.id, "temporary", retry_after=0)
             self.assertEqual(store.due_reviews()[0].id, item.id)
 
+    def test_unavailable_review_is_terminal_and_expires_with_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReviewStore(Path(directory))
+            store.initialize()
+            item = review()
+            store.queue_if_needed(item)
+            store.mark_queued(item.id)
+            store.mark_unavailable(item.id, "No recordings found for time range")
+
+            self.assertEqual(store.summary(), {"unavailable": 1})
+            self.assertEqual(store.retryable_count(), 0)
+            self.assertEqual(store.unavailable_count(), 1)
+            self.assertFalse(store.queue_if_needed(item))
+            self.assertEqual(store.due_reviews(), [])
+            self.assertEqual(store.purge_unavailable(before=1), 0)
+            self.assertEqual(store.purge_unavailable(before=3), 1)
+            self.assertEqual(store.summary(), {})
+
 
 if __name__ == "__main__":
     unittest.main()

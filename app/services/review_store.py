@@ -78,7 +78,7 @@ class ReviewStore:
                 connection.commit()
                 return True
             state, next_attempt_at = row
-            if state in {"completed", "pending", "queued", "processing"}:
+            if state in {"completed", "unavailable", "pending", "queued", "processing"}:
                 return False
             if state == "failed" and next_attempt_at > now:
                 return False
@@ -121,6 +121,51 @@ class ReviewStore:
                 (error[:1000], time.time() + retry_after, time.time(), review_id),
             )
             connection.commit()
+
+    def mark_unavailable(self, review_id: str, error: str) -> None:
+        """Permanently stop retrying a review with no source recording."""
+        with closing(sqlite3.connect(self._path)) as connection, connection:
+            connection.execute(
+                "UPDATE reviews SET state = 'unavailable', last_error = ?, next_attempt_at = 0, updated_at = ? WHERE review_id = ?",
+                (error[:1000], time.time(), review_id),
+            )
+            connection.commit()
+
+    def retryable_count(self) -> int:
+        with closing(sqlite3.connect(self._path)) as connection, connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM reviews WHERE state NOT IN ('completed', 'unavailable')"
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def unavailable_count(self) -> int:
+        with closing(sqlite3.connect(self._path)) as connection, connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM reviews WHERE state = 'unavailable'"
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def purge_unavailable(self, before: float) -> int:
+        """Forget unavailable reviews whose event has left the retention window."""
+        with closing(sqlite3.connect(self._path)) as connection, connection:
+            rows = connection.execute(
+                "SELECT review_id, payload, updated_at FROM reviews WHERE state = 'unavailable'"
+            ).fetchall()
+            expired: list[str] = []
+            for review_id, payload, updated_at in rows:
+                try:
+                    event_time = Review.model_validate_json(payload).end_time
+                except ValueError:
+                    event_time = updated_at
+                if event_time < before:
+                    expired.append(review_id)
+            if expired:
+                connection.executemany(
+                    "DELETE FROM reviews WHERE review_id = ?",
+                    ((review_id,) for review_id in expired),
+                )
+            connection.commit()
+        return len(expired)
 
     def due_reviews(self, limit: int = 100) -> list[Review]:
         now = time.time()

@@ -140,6 +140,33 @@ class RuntimeStatusTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(web.HTTPTooManyRequests):
             await dashboard._restart_response(request)
 
+    async def test_dashboard_manual_runs_are_authenticated(self) -> None:
+        status = RuntimeStatus("frigate/reviews", 1)
+        retention_called = asyncio.Event()
+        reconciliation_called = asyncio.Event()
+        dashboard = DashboardServer(
+            DashboardConfig(username="viewer", password="secret"),
+            status,
+            ReviewQueue(),
+            retention_callback=lambda: retention_called.set() or True,
+            reconciliation_callback=lambda: reconciliation_called.set() or True,
+        )
+        authorization = base64.b64encode(b"viewer:secret").decode()
+        request = SimpleNamespace(
+            headers={
+                "Authorization": f"Basic {authorization}",
+                "X-Exporter-Request": "dashboard",
+            },
+            cookies={},
+        )
+
+        retention_response = await dashboard._retention_response(request)
+        reconciliation_response = await dashboard._reconciliation_response(request)
+        self.assertEqual(retention_response.status, 202)
+        self.assertEqual(reconciliation_response.status, 202)
+        self.assertTrue(retention_called.is_set())
+        self.assertTrue(reconciliation_called.is_set())
+
     async def test_dashboard_requires_auth_but_health_is_public(self) -> None:
         status = RuntimeStatus("frigate/reviews", 1)
         dashboard = DashboardServer(
@@ -202,10 +229,11 @@ class RuntimeStatusTests(unittest.IsolatedAsyncioTestCase):
 
     def test_reconciliation_result_reports_drained_success(self) -> None:
         status = RuntimeStatus("frigate/reviews", 1)
-        status.set_reconciliation_result(discovered=6, queued=2, pending=0)
+        status.set_reconciliation_result(discovered=6, queued=2, pending=0, unavailable=3)
         result = status.snapshot(0)["reconciliation"]
         self.assertEqual(result["state"], "success")
         self.assertEqual(result["pending"], 0)
+        self.assertEqual(result["unavailable"], 3)
         self.assertIsNone(result["last_error"])
 
         status.set_reconciliation_result(discovered=1, queued=1, pending=1)

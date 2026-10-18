@@ -6,7 +6,7 @@ import shutil
 import time
 from pathlib import Path
 
-from app.clients.frigate import FrigateClient
+from app.clients.frigate import FrigateClient, RecordingUnavailableError
 from app.models.config import Config
 from app.models.review import Review
 from app.queue.review_queue import ReviewQueue
@@ -224,6 +224,15 @@ class ExportWorker:
 
                     break
 
+            except RecordingUnavailableError as exc:
+                logger.warning(
+                    "Worker #%d cannot export review %s: recording unavailable; will not retry",
+                    self._worker_id,
+                    review.id,
+                )
+                error = str(exc)
+                if self._store is not None:
+                    self._store.mark_unavailable(review.id, error)
             except Exception as exc:
                 logger.exception(
                     "Worker #%d failed processing review %s",
@@ -240,9 +249,10 @@ class ExportWorker:
                     error=error,
                 )
                 if self._store is not None:
-                    summary = self._store.summary()
-                    pending = sum(summary.values()) - summary.get("completed", 0)
-                    self._status.update_reconciliation_queue(pending)
+                    self._status.update_reconciliation_queue(
+                        self._store.retryable_count(),
+                        self._store.unavailable_count(),
+                    )
                 self._queue.task_done()
 
     def _copy_with_progress(

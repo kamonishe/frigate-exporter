@@ -159,14 +159,19 @@ async def async_main() -> None:
     review_filter = ReviewFilter(cfg.filters)
     review_store = ReviewStore(Path(cfg.export.output))
     review_store.initialize()
+    reconciliation_worker = ReconciliationWorker(
+        cfg.reconciliation, frigate, review_queue, review_store, status
+    )
+    retention_worker = RetentionWorker(cfg, status, review_store)
     dashboard = DashboardServer(
         cfg.dashboard,
         status,
         review_queue,
         restart_callback=request_process_restart,
-    )
-    reconciliation_worker = ReconciliationWorker(
-        cfg.reconciliation, frigate, review_queue, review_store, status
+        retention_callback=retention_worker.trigger_cleanup,
+        reconciliation_callback=lambda: reconciliation_worker.trigger_reconcile(
+            "dashboard", force=True
+        ),
     )
 
     def on_mqtt_state(state: str, error: str | None = None) -> None:
@@ -297,7 +302,7 @@ async def async_main() -> None:
         ]
 
         retention_task = asyncio.create_task(
-            RetentionWorker(cfg, status).run(),
+            retention_worker.run(),
             name="retention-worker",
         )
         frigate_monitor_task = asyncio.create_task(
