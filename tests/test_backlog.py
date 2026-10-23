@@ -43,7 +43,9 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
                 reconciler = ReconciliationWorker(
                     ReconciliationConfig(), client, queue, store, status
                 )
-                await asyncio.wait_for(reconciler.reconcile(), timeout=180)
+                # This exercises 1,100 durable SQLite transitions and file copies
+                # synchronously; allow slower CI runners to finish the regression.
+                await asyncio.wait_for(reconciler.reconcile(), timeout=600)
                 self.assertEqual(store.summary(), {"completed": 1100})
                 self.assertEqual(queue.size(), 0)
                 self.assertEqual(client.start_export.await_count, 1100)

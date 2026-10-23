@@ -17,6 +17,10 @@ from app.services.storage import summarize_export_storage
 logger = logging.getLogger("frigate_exporter.worker")
 
 
+class ExportTimeoutError(TimeoutError):
+    """Raised when Frigate does not finish an export within the deadline."""
+
+
 class ExportWorker:
     """
     Worker responsible for exporting completed reviews.
@@ -103,126 +107,94 @@ class ExportWorker:
                     export_id,
                 )
 
-                last_state = None
+                try:
+                    match = await self._wait_for_export(export_id)
+                except ExportTimeoutError:
+                    await self._cleanup_export(export_id)
+                    raise
 
-                while True:
-                    exports = await self._frigate.list_exports()
+                logger.debug(
+                    "Worker #%d export finished",
+                    self._worker_id,
+                )
 
-                    match = next(
-                        (
-                            e
-                            for e in exports
-                            if e["id"] == export_id
-                        ),
-                        None,
+                #
+                # Frigate already returns the correct path.
+                # We mount the Frigate media directory to
+                # /media/frigate inside the container.
+                #
+                source = Path(
+                    match["video_path"]
+                )
+
+                destination = (
+                    self._output_dir
+                    / source.name
+                )
+
+                self._output_dir.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                logger.debug(
+                    "Copying %s -> %s",
+                    source,
+                    destination,
+                )
+
+                source_size = source.stat().st_size
+                self._status.set_worker_copy_progress(
+                    self._worker_id,
+                    0,
+                    source_size,
+                )
+                await asyncio.to_thread(
+                    self._copy_with_progress,
+                    source,
+                    destination,
+                    source_size,
+                )
+                destination_size = destination.stat().st_size
+
+                if source_size != destination_size:
+                    raise RuntimeError(
+                        "Copied file size does not match source."
                     )
 
-                    if match is None:
-                        if last_state != "waiting":
-                            logger.debug(
-                                "Worker #%d waiting...",
-                                self._worker_id,
-                            )
-                            last_state = "waiting"
+                self._status.set_storage(
+                    summarize_export_storage(self._output_dir)
+                )
 
-                        await asyncio.sleep(1)
-                        continue
+                logger.debug(
+                    "Requesting Frigate cleanup"
+                )
 
-                    if match["in_progress"]:
-                        if last_state != "running":
-                            logger.debug(
-                                "Worker #%d exporting...",
-                                self._worker_id,
-                            )
-                            last_state = "running"
+                self._status.set_worker_phase(
+                    self._worker_id,
+                    "cleanup",
+                )
 
-                        await asyncio.sleep(1)
-                        continue
+                await self._frigate.delete_exports(
+                    [export_id]
+                )
 
-                    logger.debug(
-                        "Worker #%d export finished",
-                        self._worker_id,
-                    )
+                elapsed = (
+                    time.monotonic()
+                    - started
+                )
 
-                    #
-                    # Frigate already returns the correct path.
-                    # We mount the Frigate media directory to
-                    # /media/frigate inside the container.
-                    #
-                    source = Path(
-                        match["video_path"]
-                    )
+                logger.info(
+                    "Export | %s | %.2f MB | %.2f s",
+                    destination.name,
+                    destination_size / 1024 / 1024,
+                    elapsed,
+                )
 
-                    destination = (
-                        self._output_dir
-                        / source.name
-                    )
+                logger.debug("----------------------------------------")
 
-                    self._output_dir.mkdir(
-                        parents=True,
-                        exist_ok=True,
-                    )
-
-                    logger.debug(
-                        "Copying %s -> %s",
-                        source,
-                        destination,
-                    )
-
-                    source_size = source.stat().st_size
-                    self._status.set_worker_copy_progress(
-                        self._worker_id,
-                        0,
-                        source_size,
-                    )
-                    await asyncio.to_thread(
-                        self._copy_with_progress,
-                        source,
-                        destination,
-                        source_size,
-                    )
-                    destination_size = destination.stat().st_size
-
-                    if source_size != destination_size:
-                        raise RuntimeError(
-                            "Copied file size does not match source."
-                        )
-
-                    self._status.set_storage(
-                        summarize_export_storage(self._output_dir)
-                    )
-
-                    logger.debug(
-                        "Requesting Frigate cleanup"
-                    )
-
-                    self._status.set_worker_phase(
-                        self._worker_id,
-                        "cleanup",
-                    )
-
-                    await self._frigate.delete_exports(
-                        [export_id]
-                    )
-
-                    elapsed = (
-                        time.monotonic()
-                        - started
-                    )
-
-                    logger.info(
-                        "Export | %s | %.2f MB | %.2f s",
-                        destination.name,
-                        destination_size / 1024 / 1024,
-                        elapsed,
-                    )
-
-                    logger.debug("----------------------------------------")
-
-                    if self._store is not None:
-                        self._store.complete(review.id)
-
-                    break
+                if self._store is not None:
+                    self._store.complete(review.id)
 
             except RecordingUnavailableError as exc:
                 logger.warning(
@@ -254,6 +226,63 @@ class ExportWorker:
                         self._store.unavailable_count(),
                     )
                 self._queue.task_done()
+
+    async def _wait_for_export(self, export_id: str) -> dict:
+        started = time.monotonic()
+        deadline = started + self._config.export.export_timeout
+        missing_deadline = started + min(60, self._config.export.export_timeout)
+        last_state: str | None = None
+
+        while True:
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                raise ExportTimeoutError(
+                    f"Frigate export {export_id} did not finish within "
+                    f"{self._config.export.export_timeout} seconds"
+                )
+
+            exports = await self._frigate.list_exports()
+            match = next(
+                (item for item in exports if item.get("id") == export_id),
+                None,
+            )
+
+            if match is None:
+                if last_state != "waiting":
+                    logger.debug(
+                        "Worker #%d waiting for Frigate export %s",
+                        self._worker_id,
+                        export_id,
+                    )
+                    last_state = "waiting"
+                if time.monotonic() >= missing_deadline:
+                    raise ExportTimeoutError(
+                        f"Frigate export {export_id} disappeared or was not "
+                        "reported by Frigate within 60 seconds"
+                    )
+            elif match.get("in_progress"):
+                if last_state != "running":
+                    logger.debug(
+                        "Worker #%d waiting for Frigate export %s to finish",
+                        self._worker_id,
+                        export_id,
+                    )
+                    last_state = "running"
+            else:
+                return match
+
+            await asyncio.sleep(min(1, remaining))
+
+    async def _cleanup_export(self, export_id: str) -> None:
+        try:
+            await self._frigate.delete_exports([export_id])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Unable to clean up timed-out Frigate export %s: %s",
+                export_id,
+                exc,
+            )
 
     def _copy_with_progress(
         self,

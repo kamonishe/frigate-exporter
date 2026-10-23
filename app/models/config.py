@@ -22,6 +22,7 @@ class ExportConfig(BaseModel):
     workers: int
     pre_capture: int
     post_capture: int
+    export_timeout: int = Field(default=900, ge=1)
 
 
 class RetentionConfig(BaseModel):

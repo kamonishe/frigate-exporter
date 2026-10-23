@@ -48,6 +48,7 @@ export:
   workers: 3
   pre_capture: 3
   post_capture: 3
+  export_timeout: 900
 
 retention:
   enabled: true
@@ -78,6 +79,10 @@ All filter lists are optional.
 Frigate publishes review events on the `frigate/reviews` topic. The exporter processes only the final `end` message for each review.
 
 The exporter automatically reconnects to MQTT after temporary connection failures.
+
+Each Frigate export is bounded by export_timeout seconds (900 by default). If
+Frigate leaves an export stuck or removes it before completion, the exporter
+marks the review for retry instead of holding a worker indefinitely.
 
 ### Dashboard
 

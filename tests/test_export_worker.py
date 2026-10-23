@@ -1,11 +1,15 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from app.models.config import Config
+from app.models.review import Review
 from app.queue.review_queue import ReviewQueue
+from app.services.review_store import ReviewStore
 from app.services.runtime_status import RuntimeStatus
-from app.workers.export_worker import ExportWorker
+from app.workers.export_worker import ExportTimeoutError, ExportWorker
 
 
 def make_config(output: Path) -> Config:
@@ -28,6 +32,7 @@ def make_config(output: Path) -> Config:
                 "workers": 1,
                 "pre_capture": 1,
                 "post_capture": 1,
+                "export_timeout": 1,
             },
             "retention": {},
             "filters": {
@@ -67,6 +72,117 @@ class ExportWorkerTests(unittest.TestCase):
             self.assertEqual(snapshot["bytes_copied"], len(contents))
             self.assertEqual(snapshot["total_bytes"], len(contents))
             self.assertEqual(snapshot["progress_percent"], 100.0)
+
+    def test_wait_for_export_returns_completed_export(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                config = make_config(directory)
+                frigate = AsyncMock()
+                frigate.list_exports.side_effect = [
+                    [],
+                    [{"id": "export-1", "in_progress": True}],
+                    [{
+                        "id": "export-1",
+                        "in_progress": False,
+                        "video_path": "/media/frigate/export.mp4",
+                    }],
+                ]
+                worker = ExportWorker(
+                    worker_id=1,
+                    queue=ReviewQueue(),
+                    frigate=frigate,
+                    config=config,
+                    status=RuntimeStatus(config.mqtt.topic, 1),
+                )
+
+                with patch(
+                    "app.workers.export_worker.asyncio.sleep",
+                    new=AsyncMock(),
+                ):
+                    result = await worker._wait_for_export("export-1")
+
+                self.assertFalse(result["in_progress"])
+                self.assertEqual(frigate.list_exports.await_count, 3)
+
+        asyncio.run(run())
+
+    def test_timed_out_export_fails_review_and_releases_worker(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                config = make_config(directory)
+                store = ReviewStore(directory)
+                store.initialize()
+                item = Review(
+                    id="review-1",
+                    camera="camera1",
+                    start_time=1,
+                    end_time=2,
+                    severity="alert",
+                    thumb_path="",
+                )
+                store.queue_if_needed(item)
+                store.mark_queued(item.id)
+
+                frigate = AsyncMock()
+                frigate.start_export.return_value = {"export_id": "export-1"}
+                frigate.list_exports.return_value = []
+                queue = ReviewQueue()
+                await queue.put(item)
+                worker = ExportWorker(
+                    worker_id=1,
+                    queue=queue,
+                    frigate=frigate,
+                    config=config,
+                    status=RuntimeStatus(config.mqtt.topic, 1),
+                    store=store,
+                )
+                task = asyncio.create_task(worker.run())
+                try:
+                    await asyncio.wait_for(queue.join(), timeout=3)
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+                self.assertEqual(store.summary(), {"failed": 1})
+                frigate.delete_exports.assert_awaited_once_with(["export-1"])
+
+        asyncio.run(run())
+
+    def test_wait_for_missing_export_times_out(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                config = make_config(directory)
+                frigate = AsyncMock()
+                frigate.list_exports.return_value = []
+                worker = ExportWorker(
+                    worker_id=1,
+                    queue=ReviewQueue(),
+                    frigate=frigate,
+                    config=config,
+                    status=RuntimeStatus(config.mqtt.topic, 1),
+                )
+
+                clock = iter((0.0, 0.5, 1.1))
+                with (
+                    patch(
+                        "app.workers.export_worker.time.monotonic",
+                        side_effect=clock,
+                    ),
+                    patch(
+                        "app.workers.export_worker.asyncio.sleep",
+                        new=AsyncMock(),
+                    ),
+                    self.assertRaisesRegex(
+                        ExportTimeoutError,
+                        "export-1",
+                    ),
+                ):
+                    await worker._wait_for_export("export-1")
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":
