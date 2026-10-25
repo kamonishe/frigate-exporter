@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -58,6 +59,8 @@ class ExportWorker:
 
             started = time.monotonic()
             error: str | None = None
+            result_kind: str | None = None
+            bytes_exported: int | None = None
 
             try:
                 if self._store is not None:
@@ -156,11 +159,16 @@ class ExportWorker:
                     source_size,
                 )
                 destination_size = destination.stat().st_size
+                bytes_exported = destination_size
 
                 if source_size != destination_size:
                     raise RuntimeError(
                         "Copied file size does not match source."
                     )
+
+                # Retention follows the Frigate event time, not the time a
+                # backlog export happened to finish copying locally.
+                self._set_event_timestamp(destination, review.end_time)
 
                 self._status.set_storage(
                     summarize_export_storage(self._output_dir)
@@ -195,6 +203,7 @@ class ExportWorker:
 
                 if self._store is not None:
                     self._store.complete(review.id)
+                result_kind = "success"
 
             except RecordingUnavailableError as exc:
                 logger.warning(
@@ -203,22 +212,46 @@ class ExportWorker:
                     review.id,
                 )
                 error = str(exc)
+                result_kind = "unavailable"
                 if self._store is not None:
                     self._store.mark_unavailable(review.id, error)
             except Exception as exc:
-                logger.exception(
-                    "Worker #%d failed processing review %s",
-                    self._worker_id,
-                    review.id,
-                )
                 error = str(exc)
+                terminal = False
                 if self._store is not None:
-                    self._store.fail(review.id, error)
+                    retention_cutoff = (
+                        time.time()
+                        - self._config.retention.retention_seconds
+                        if self._config.retention.enabled
+                        else None
+                    )
+                    terminal = self._store.fail(
+                        review.id,
+                        error,
+                        max_attempts=self._config.export.max_attempts,
+                        expire_before=retention_cutoff,
+                    )
+                result_kind = "unavailable" if terminal else "failed"
+                if terminal:
+                    logger.warning(
+                        "Worker #%d stopped retrying review %s: %s",
+                        self._worker_id,
+                        review.id,
+                        error,
+                    )
+                else:
+                    logger.exception(
+                        "Worker #%d failed processing review %s",
+                        self._worker_id,
+                        review.id,
+                    )
 
             finally:
                 self._status.set_worker_idle(
                     self._worker_id,
                     error=error,
+                    result_kind=result_kind,
+                    bytes_exported=bytes_exported,
                 )
                 if self._store is not None:
                     self._status.update_reconciliation_queue(
@@ -283,6 +316,11 @@ class ExportWorker:
                 export_id,
                 exc,
             )
+
+    @staticmethod
+    def _set_event_timestamp(destination: Path, event_time: float) -> None:
+        access_time = destination.stat().st_atime
+        os.utime(destination, (access_time, event_time))
 
     def _copy_with_progress(
         self,

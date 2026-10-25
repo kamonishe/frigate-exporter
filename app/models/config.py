@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from __future__ import annotations
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class FrigateConfig(BaseModel):
@@ -23,12 +25,38 @@ class ExportConfig(BaseModel):
     pre_capture: int
     post_capture: int
     export_timeout: int = Field(default=900, ge=1)
+    max_attempts: int = Field(default=5, ge=1)
 
 
 class RetentionConfig(BaseModel):
     enabled: bool = False
-    days: int = 30
-    check_interval_hours: int = 24
+    days: int | None = Field(default=None, ge=1)
+    hours: int | None = Field(default=None, ge=1)
+    check_interval_hours: int = Field(default=24, ge=1)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> RetentionConfig:
+        if self.days is not None and self.hours is not None:
+            raise ValueError("retention.days and retention.hours cannot both be set")
+        if self.days is None and self.hours is None:
+            self.days = 30
+        return self
+
+    @property
+    def retention_seconds(self) -> int:
+        if self.hours is not None:
+            return self.hours * 60 * 60
+        assert self.days is not None
+        return self.days * 24 * 60 * 60
+
+    @property
+    def retention_label(self) -> str:
+        if self.hours is not None:
+            unit = "hour" if self.hours == 1 else "hours"
+            return f"{self.hours} {unit}"
+        assert self.days is not None
+        unit = "day" if self.days == 1 else "days"
+        return f"{self.days} {unit}"
 
 
 class FilterConfig(BaseModel):

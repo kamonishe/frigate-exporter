@@ -31,6 +31,7 @@ class DashboardServer:
         restart_callback: Callable[[], None] | None = None,
         retention_callback: Callable[[], bool] | None = None,
         reconciliation_callback: Callable[[], bool] | None = None,
+        queue_status_callback: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         self._config = config
         self._status = status
@@ -38,6 +39,7 @@ class DashboardServer:
         self._restart_callback = restart_callback
         self._retention_callback = retention_callback
         self._reconciliation_callback = reconciliation_callback
+        self._queue_status_callback = queue_status_callback
         self._restart_requested = False
         self._runner: web.AppRunner | None = None
         self._sessions: dict[str, float] = {}
@@ -157,7 +159,12 @@ class DashboardServer:
 
     async def _status_response(self, request: web.Request) -> web.Response:
         self._require_auth(request)
-        payload = self._status.snapshot(self._queue.size())
+        queue_status = (
+            self._queue_status_callback()
+            if self._queue_status_callback is not None
+            else None
+        )
+        payload = self._status.snapshot(self._queue.size(), queue_status)
         payload["logging"] = logging_settings()
         # Apply the current selection to retained entries as well as future output.
         level = logging.getLogger().level
@@ -299,6 +306,8 @@ _DASHBOARD_HTML = """<!doctype html>
     .grid { display: grid; gap: .75rem; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
     .card { background: #1f2937; border-radius: .75rem; padding: .8rem; }
     .wide { grid-column: 1 / -1; }
+    .camera-activity { margin-top: 1.25rem; align-self: start; }
+    .camera-activity h2 { margin: 0 0 .75rem; }
     .detail-row { display: grid; grid-template-columns: minmax(100px, .7fr) 1fr; gap: .8rem; padding: .55rem 0; margin: 0; border-top: 1px solid #374151; }
     dt { color: #9ca3af; } dd { margin: 0; overflow-wrap: anywhere; }
     .actions { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; margin: .5rem 0 1rem; }
@@ -351,7 +360,8 @@ _DASHBOARD_HTML = """<!doctype html>
       <article class="card"><div>Retention &amp; exported storage</div><div class="compact-bubbles"><div class="status-bubble"><div class="muted">Exported storage (current)</div><div class="value" id="storage">—</div></div><div class="status-bubble"><div class="muted">Retention status</div><div class="value" id="retention-status">—</div></div></div><div class="detail-panel"><h3>Retention details</h3><div class="detail" id="retention"></div></div></article>
       <article class="card"><div>Review reconciliation</div><div class="status-bubble" style="margin-top:.7rem"><div class="muted">Reconciliation status</div><div class="value" id="reconciliation-status">—</div></div><div class="detail-panel"><h3>Reconciliation details</h3><div class="detail" id="reconciliation-detail"></div></div></article>
     </section>
-    <div class="workers-heading"><h2>Workers</h2><span class="queue-summary" id="queue">Loading queue…</span></div>
+    <article class="card wide camera-activity"><h2>Camera activity</h2><div class="table-wrap"><table><thead><tr><th>Camera</th><th>Exported</th><th>Failed</th><th>Unavailable</th><th>Data copied</th><th>Last success</th><th>Latest failure</th></tr></thead><tbody id="camera-stats"></tbody></table></div></article>
+    <div class="workers-heading"><h2>Workers</h2><span class="queue-summary" id="queue">Loading queue…</span><span class="muted" id="queue-oldest"></span></div>
     <div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Activity</th><th>Progress</th><th>Elapsed</th><th>Started</th><th>Completed</th><th>Last result</th></tr></thead><tbody id="workers"></tbody></table></div>
     <h2>Latest logs</h2>
     <div class="controls">
@@ -367,6 +377,15 @@ _DASHBOARD_HTML = """<!doctype html>
     const setText = (id, value) => { const element = document.getElementById(id); if (element) element.textContent = value; };
     const timestamp = value => value ? new Date(value).toLocaleString() : '—';
     const duration = value => value == null ? '—' : `${Number(value).toFixed(1)} s`;
+    const age = value => {
+      if (value == null) return '—';
+      const seconds = Math.max(0, Number(value));
+      if (seconds < 60) return `${Math.floor(seconds)}s`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ${Math.floor(seconds % 60)}s`;
+      const hours = Math.floor(minutes / 60);
+      return `${hours}h ${minutes % 60}m`;
+    };
     const stateClass = state => state === 'connected' ? 'good' : state === 'reconnecting' ? 'warn' : 'bad';
     const detailRows = (id, entries) => {
       const target = document.getElementById(id); if (!target) return;
@@ -486,7 +505,10 @@ _DASHBOARD_HTML = """<!doctype html>
       const statusElement = document.getElementById("retention-status"); if (statusElement) statusElement.textContent = retention.enabled ? "Enabled" : "Disabled"; if (statusElement) statusElement.className = "value " + (retention.enabled ? "good" : "warn");
       const parts = [["Retention", retention.enabled ? "Enabled" : "Disabled"]];
       if (!retention.enabled) { detailRows("retention", parts); return; }
-      parts.push(["Policy", `Older than ${retention.days} day(s)`]);
+      const window = retention.hours != null
+        ? `${retention.hours} hour${retention.hours === 1 ? "" : "s"}`
+        : `${retention.days} day${retention.days === 1 ? "" : "s"}`;
+      parts.push(["Policy", `Older than ${window}`]);
       parts.push(["Cleanup interval", `${retention.check_interval_hours} hour(s)`]);
       if (retention.last_run_at) {
         parts.push(["Last cleanup", timestamp(retention.last_run_at)]);
@@ -516,21 +538,35 @@ _DASHBOARD_HTML = """<!doctype html>
         setState("mqtt", status.connections.mqtt);
         const pending = status.queue.pending;
         setText("queue", pending === 0 ? "Queue empty" : `${pending} review${pending === 1 ? "" : "s"} waiting`);
+        const oldest = status.queue.oldest;
+        setText("queue-oldest", oldest ? `Oldest: ${oldest.camera || oldest.review_id} · ${age(oldest.age_seconds)}` : "");
         setText("storage", status.storage ? `${status.storage.total_size} (${status.storage.file_count} files)` : "Scanning…");
         renderRetention(status.retention);
         const reconciliation = status.reconciliation || {};
-        const reconciliationState = !reconciliation.enabled ? "Disabled" : reconciliation.state === "success" ? "Success" : reconciliation.state === "error" ? "Error" : "Pending";
+        const active = reconciliation.active || {};
+        const live = reconciliation.state === "processing" ? active : reconciliation;
+        const reconciliationState = !reconciliation.enabled
+          ? "Disabled"
+          : reconciliation.state === "processing"
+            ? "Processing"
+            : reconciliation.state === "success"
+              ? "Success"
+              : reconciliation.state === "error"
+                ? "Error"
+                : "Pending";
         const reconciliationElement = document.getElementById("reconciliation-status");
         if (reconciliationElement) reconciliationElement.textContent = reconciliationState;
         if (reconciliationElement) reconciliationElement.className = "value " + (reconciliation.state === "success" ? "good" : reconciliation.state === "error" ? "bad" : "warn");
         detailRows("reconciliation-detail", [
           ["Last run", timestamp(reconciliation.last_run_at)],
+          ["Current run", reconciliation.state === "processing" ? timestamp(active.started_at) : "—"],
           ["Last success", timestamp(reconciliation.last_success_at)],
-          ["Discovered", reconciliation.discovered || 0],
-          ["Processed", reconciliation.queued || 0],
-          ["Pending", reconciliation.pending || 0],
-          ["Unavailable", reconciliation.unavailable || 0],
-          ["Result", reconciliation.state === "success" ? `No retryable items queued${reconciliation.unavailable ? `; ${reconciliation.unavailable} unavailable` : ""}` : reconciliation.state === "error" ? "Failed — see error below" : "Processing"],
+          ["Discovered", live.discovered || 0],
+          ["Queued", live.queued || 0],
+          ["Processed", live.processed || 0],
+          ["Pending", live.pending || 0],
+          ["Unavailable", live.unavailable || 0],
+          ["Result", reconciliation.state === "processing" ? "Processing" : reconciliation.state === "success" ? `No retryable items queued${reconciliation.unavailable ? `; ${reconciliation.unavailable} unavailable` : ""}` : reconciliation.state === "error" ? "Failed — see error below" : "Pending"],
           ["Last error", reconciliation.last_error || "None"]
         ]);
         if (!loggingEdited && !loggingSaving) {
@@ -550,6 +586,29 @@ _DASHBOARD_HTML = """<!doctype html>
           addCell(row, timestamp(worker.last_completed_at));
           addCell(row, result); return row;
         }));
+
+        const cameraStats = document.getElementById('camera-stats');
+        if (cameraStats) {
+          const entries = Object.entries(status.camera_stats || {});
+          cameraStats.replaceChildren(...entries.map(([camera, stats]) => {
+            const row = document.createElement('tr');
+            addCell(row, camera);
+            addCell(row, stats.exported || 0);
+            addCell(row, stats.failed || 0);
+            addCell(row, stats.unavailable || 0);
+            addCell(row, formatBytesClient(stats.bytes_exported || 0));
+            addCell(row, timestamp(stats.last_success_at));
+            const failure = stats.recent_failures && stats.recent_failures[0];
+            addCell(row, failure ? `${timestamp(failure.timestamp)} · ${failure.error}` : '—');
+            return row;
+          }));
+          if (!entries.length) {
+            const row = document.createElement('tr');
+            const cell = addCell(row, 'No completed worker results yet.');
+            cell.colSpan = 7;
+            cameraStats.append(row);
+          }
+        }
 
         const logs = document.getElementById('logs');
         if (logs) logs.replaceChildren(...status.logs.slice().reverse().map(entry => {

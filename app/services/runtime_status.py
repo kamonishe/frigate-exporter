@@ -5,6 +5,7 @@ import time
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from app.core.version import APP_VERSION
 from app.models.review import Review
@@ -24,7 +25,7 @@ class RuntimeStatus:
     ) -> None:
         self._started_at = self._now()
         self._history_path = history_path
-        self._history_days = 1
+        self._history_seconds = 24 * 60 * 60
         self._secrets = [value for value in (secrets or []) if value]
         self._connections = {
             "frigate": self._new_connection(version=None),
@@ -34,17 +35,22 @@ class RuntimeStatus:
         self._reconciliation: dict[str, object] = {
             "enabled": False,
             "state": "idle",
+            "started_at": None,
             "last_run_at": None,
             "last_success_at": None,
             "last_error": None,
             "discovered": 0,
             "queued": 0,
+            "processed": 0,
             "pending": 0,
             "unavailable": 0,
+            "active": None,
         }
         self._retention: dict[str, object] = {
             "enabled": False,
             "days": None,
+            "hours": None,
+            "retention_seconds": None,
             "check_interval_hours": None,
             "last_run_at": None,
             "cutoff_at": None,
@@ -62,6 +68,7 @@ class RuntimeStatus:
         self._worker_started_monotonic: dict[int, float | None] = {
             worker_id: None for worker_id in self._workers
         }
+        self._camera_stats: dict[str, dict[str, Any]] = {}
         self._logs: deque[dict[str, str]] = deque(maxlen=10)
         self._storage_history: deque[dict[str, object]] = deque(maxlen=2000)
         self._retention_history: deque[dict[str, object]] = deque(maxlen=2000)
@@ -166,7 +173,7 @@ class RuntimeStatus:
         self.set_frigate_state("connected")
 
     def _recent_history(self, history: deque[dict[str, object]]) -> list[dict[str, object]]:
-        cutoff = time.time() - self._history_days * 24 * 60 * 60
+        cutoff = time.time() - self._history_seconds
         return [{key: value for key, value in entry.items() if key != "epoch"} for entry in history if float(entry["epoch"]) >= cutoff]
 
     def _record_storage(self, summary: ExportStorageSummary, now: str) -> None:
@@ -176,11 +183,51 @@ class RuntimeStatus:
     def configure_reconciliation(self, *, enabled: bool) -> None:
         self._reconciliation["enabled"] = enabled
 
+    def start_reconciliation(self) -> None:
+        now = self._now()
+        self._reconciliation.update(
+            {
+                "state": "processing",
+                "started_at": now,
+                "last_error": None,
+                "active": {
+                    "started_at": now,
+                    "discovered": 0,
+                    "queued": 0,
+                    "processed": 0,
+                    "pending": self._reconciliation["pending"],
+                    "unavailable": self._reconciliation["unavailable"],
+                },
+            }
+        )
+
+    def update_reconciliation_progress(
+        self,
+        *,
+        discovered: int | None = None,
+        queued: int | None = None,
+        processed: int | None = None,
+        pending: int | None = None,
+        unavailable: int | None = None,
+    ) -> None:
+        active = self._reconciliation.get("active")
+        if not isinstance(active, dict):
+            return
+        values = {
+            "discovered": discovered,
+            "queued": queued,
+            "processed": processed,
+            "pending": pending,
+            "unavailable": unavailable,
+        }
+        active.update({key: value for key, value in values.items() if value is not None})
+
     def set_reconciliation_result(
         self,
         *,
         discovered: int,
         queued: int,
+        processed: int | None = None,
         pending: int,
         unavailable: int = 0,
         error: str | None = None,
@@ -192,18 +239,40 @@ class RuntimeStatus:
                 "state": "error" if error else ("success" if pending == 0 else "pending"),
                 "discovered": discovered,
                 "queued": queued,
+                "processed": queued if processed is None else processed,
                 "pending": pending,
                 "unavailable": unavailable,
                 "last_error": self._redact(error),
+                "active": None,
             }
         )
         if error is None:
             self._reconciliation["last_success_at"] = now
-        self._reconciliation_history.append({"epoch": time.time(), "timestamp": now, "state": self._reconciliation["state"], "discovered": discovered, "queued": queued, "pending": pending, "unavailable": unavailable, "error": self._redact(error)})
+        self._reconciliation_history.append({"epoch": time.time(), "timestamp": now, "state": self._reconciliation["state"], "discovered": discovered, "queued": queued, "processed": queued if processed is None else processed, "pending": pending, "unavailable": unavailable, "error": self._redact(error)})
         self._persist_history()
+
+    def set_reconciliation_error(
+        self,
+        error: str,
+        *,
+        pending: int,
+        unavailable: int,
+    ) -> None:
+        active = self._reconciliation.get("active")
+        values = active if isinstance(active, dict) else {}
+        self.set_reconciliation_result(
+            discovered=int(values.get("discovered", 0)),
+            queued=int(values.get("queued", 0)),
+            processed=int(values.get("processed", 0)),
+            pending=pending,
+            unavailable=unavailable,
+            error=error,
+        )
+
     def update_reconciliation_queue(self, pending: int, unavailable: int | None = None) -> None:
         """Refresh reconciliation state when export workers drain the durable queue."""
-        if not self._reconciliation.get("last_run_at"):
+        self.update_reconciliation_progress(pending=pending, unavailable=unavailable)
+        if not self._reconciliation.get("last_run_at") and self._reconciliation.get("active") is None:
             return
         self._reconciliation["pending"] = pending
         if unavailable is not None:
@@ -216,19 +285,30 @@ class RuntimeStatus:
 
     def set_reconciliation_unavailable(self, unavailable: int) -> None:
         self._reconciliation["unavailable"] = unavailable
+        self.update_reconciliation_progress(unavailable=unavailable)
 
     def configure_retention(
         self,
         *,
         enabled: bool,
-        days: int,
-        check_interval_hours: int,
+        days: int | None = None,
+        hours: int | None = None,
+        check_interval_hours: int = 24,
+        retention_seconds: int | None = None,
     ) -> None:
-        self._history_days = days if enabled else 1
+        if retention_seconds is None:
+            retention_seconds = (
+                hours * 60 * 60
+                if hours is not None
+                else (days or 30) * 24 * 60 * 60
+            )
+        self._history_seconds = retention_seconds if enabled else 24 * 60 * 60
         self._retention.update(
             {
                 "enabled": enabled,
                 "days": days,
+                "hours": hours,
+                "retention_seconds": retention_seconds,
                 "check_interval_hours": check_interval_hours,
             }
         )
@@ -285,10 +365,49 @@ class RuntimeStatus:
         self,
         worker_id: int,
         error: str | None = None,
+        result_kind: str | None = None,
+        bytes_exported: int | None = None,
     ) -> None:
         worker = self._workers[worker_id]
         started = self._worker_started_monotonic[worker_id]
         elapsed = time.monotonic() - started if started is not None else None
+        camera = worker.get("camera")
+        if isinstance(camera, str) and camera:
+            stats = self._camera_stats.setdefault(
+                camera,
+                {
+                    "exported": 0,
+                    "failed": 0,
+                    "unavailable": 0,
+                    "bytes_exported": 0,
+                    "last_success_at": None,
+                    "last_error_at": None,
+                    "last_error": None,
+                    "recent_failures": deque(maxlen=5),
+                },
+            )
+            kind = result_kind or ("failed" if error else "success")
+            if kind == "success":
+                stats["exported"] = int(stats["exported"]) + 1
+                stats["bytes_exported"] = int(stats["bytes_exported"]) + (bytes_exported or 0)
+                stats["last_success_at"] = self._now()
+            else:
+                field = "unavailable" if kind == "unavailable" else "failed"
+                stats[field] = int(stats[field]) + 1
+                if error:
+                    error_at = self._now()
+                    stats["last_error_at"] = error_at
+                    stats["last_error"] = self._redact(error)
+                    recent = stats["recent_failures"]
+                    if isinstance(recent, deque):
+                        recent.appendleft(
+                            {
+                                "timestamp": error_at,
+                                "review_id": worker.get("review_id"),
+                                "kind": kind,
+                                "error": self._redact(error),
+                            }
+                        )
         worker.update(
             {
                 "state": "idle",
@@ -353,7 +472,11 @@ class RuntimeStatus:
             }
         )
 
-    def snapshot(self, queue_size: int) -> dict[str, object]:
+    def snapshot(
+        self,
+        queue_size: int,
+        queue_status: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         storage = self._storage
         workers = []
         for worker_id, worker in self._workers.items():
@@ -366,6 +489,17 @@ class RuntimeStatus:
             )
             workers.append(item)
 
+        queue: dict[str, object] = {"pending": queue_size}
+        if queue_status is not None:
+            queue.update(queue_status)
+
+        camera_stats: dict[str, dict[str, object]] = {}
+        for camera, stats in sorted(self._camera_stats.items()):
+            camera_stats[camera] = {
+                key: (list(value) if isinstance(value, deque) else value)
+                for key, value in stats.items()
+            }
+
         return {
             "exporter": {
                 "version": APP_VERSION,
@@ -375,8 +509,9 @@ class RuntimeStatus:
                 name: dict(connection)
                 for name, connection in self._connections.items()
             },
-            "queue": {"pending": queue_size},
+            "queue": queue,
             "workers": workers,
+            "camera_stats": camera_stats,
             "storage_history": self._recent_history(self._storage_history),
             "retention_history": self._recent_history(self._retention_history),
             "reconciliation_history": self._recent_history(self._reconciliation_history),

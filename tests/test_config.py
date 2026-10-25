@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.core import config as config_module
+from app.models.config import RetentionConfig
 
 
 class ConfigTests(unittest.TestCase):
@@ -53,6 +54,14 @@ logging:
 
             self.assertEqual(config.dashboard.username, "viewer")
             self.assertEqual(config.dashboard.password, "dashboard-secret")
+
+    def test_retention_supports_hours_and_rejects_mixed_units(self) -> None:
+        retention = RetentionConfig(hours=1)
+        self.assertEqual(retention.retention_seconds, 3600)
+        self.assertEqual(retention.retention_label, "1 hour")
+
+        with self.assertRaises(ValueError):
+            RetentionConfig(days=1, hours=1)
 
     def test_invalid_yaml_reports_file_and_location(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

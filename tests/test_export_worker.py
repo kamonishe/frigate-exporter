@@ -33,6 +33,7 @@ def make_config(output: Path) -> Config:
                 "pre_capture": 1,
                 "post_capture": 1,
                 "export_timeout": 1,
+                "max_attempts": 10,
             },
             "retention": {},
             "filters": {
@@ -72,6 +73,16 @@ class ExportWorkerTests(unittest.TestCase):
             self.assertEqual(snapshot["bytes_copied"], len(contents))
             self.assertEqual(snapshot["total_bytes"], len(contents))
             self.assertEqual(snapshot["progress_percent"], 100.0)
+
+    def test_event_timestamp_uses_review_end_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "export.mp4"
+            destination.write_bytes(b"recording")
+            event_time = 1_700_000_000.0
+
+            ExportWorker._set_event_timestamp(destination, event_time)
+
+            self.assertAlmostEqual(destination.stat().st_mtime, event_time)
 
     def test_wait_for_export_returns_completed_export(self) -> None:
         async def run() -> None:
@@ -147,6 +158,50 @@ class ExportWorkerTests(unittest.TestCase):
 
                 self.assertEqual(store.summary(), {"failed": 1})
                 frigate.delete_exports.assert_awaited_once_with(["export-1"])
+
+        asyncio.run(run())
+
+    def test_timed_out_export_becomes_unavailable_at_attempt_limit(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                config_data = make_config(directory).model_dump()
+                config_data["export"]["max_attempts"] = 1
+                config = Config.model_validate(config_data)
+                store = ReviewStore(directory)
+                store.initialize()
+                item = Review(
+                    id="review-1",
+                    camera="camera1",
+                    start_time=1,
+                    end_time=2,
+                    severity="alert",
+                    thumb_path="",
+                )
+                store.queue_if_needed(item)
+                store.mark_queued(item.id)
+
+                frigate = AsyncMock()
+                frigate.start_export.return_value = {"export_id": "export-1"}
+                frigate.list_exports.return_value = []
+                queue = ReviewQueue()
+                await queue.put(item)
+                worker = ExportWorker(
+                    worker_id=1,
+                    queue=queue,
+                    frigate=frigate,
+                    config=config,
+                    status=RuntimeStatus(config.mqtt.topic, 1),
+                    store=store,
+                )
+                task = asyncio.create_task(worker.run())
+                try:
+                    await asyncio.wait_for(queue.join(), timeout=3)
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+                self.assertEqual(store.summary(), {"unavailable": 1})
 
         asyncio.run(run())
 

@@ -48,6 +48,35 @@ def make_config(output: Path) -> Config:
 
 
 class RetentionWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cleanup_supports_one_hour_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            expired = directory / "expired.mp4"
+            retained = directory / "retained.mp4"
+            expired.write_bytes(b"a")
+            retained.write_bytes(b"b")
+            old = time.time() - 2 * 3600
+            os.utime(expired, (old, old))
+
+            config_data = make_config(directory).model_dump()
+            config_data["retention"] = {
+                "enabled": True,
+                "hours": 1,
+                "check_interval_hours": 1,
+            }
+            config = Config.model_validate(config_data)
+            status = RuntimeStatus(config.mqtt.topic, 1)
+            worker = RetentionWorker(config, status)
+
+            await worker.cleanup()
+
+            snapshot = status.snapshot(0)
+            self.assertFalse(expired.exists())
+            self.assertTrue(retained.exists())
+            self.assertEqual(snapshot["retention"]["hours"], 1)
+            self.assertIsNone(snapshot["retention"]["days"])
+            self.assertEqual(snapshot["retention"]["retention_seconds"], 3600)
+
     async def test_cleanup_updates_storage_and_retention_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

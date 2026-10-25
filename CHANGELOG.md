@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-10-25
+
+### Added
+
+- Add per-camera export, failure, unavailable, and copied-byte summaries with recent failure details to the dashboard.
+- Show the durable queue depth, oldest waiting review, and queue age beside Workers.
+- Show live reconciliation progress with an explicit `Processing` state and separate completed-run results.
+- Support validated sub-day retention windows with `retention.hours` (for example, one hour) alongside the existing day-based setting.
+
+### Fixed
+
+- Base retention timestamps for new exported files on the Frigate review event time rather than when a backlog export was copied locally.
+- Stop retrying failed Frigate exports forever: reviews become unavailable after
+  the configured maximum attempts or when their event leaves the retention
+  window, and are later removed by retention cleanup.
+- Keep reconciliation progress visible during large backlogs instead of leaving
+  the dashboard on a stale pending state.
+
 ## [1.0.9] - 2026-10-23
 
 ### Fixed

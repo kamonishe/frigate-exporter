@@ -47,7 +47,9 @@ class ReconciliationWorker:
         return True
 
     async def reconcile(self) -> None:
+        self._status.start_reconciliation()
         now = time.time()
+        queued_ids: list[str] = []
         reviews = await self._frigate.list_reviews(
             after=max(
                 now - self._config.lookback_days * 86400,
@@ -55,22 +57,44 @@ class ReconciliationWorker:
             ),
             before=now,
         )
+        self._status.update_reconciliation_progress(discovered=len(reviews))
         queued = 0
         for review in reviews:
             if self._store.queue_if_needed(review) and self._store.mark_queued(review.id):
                 await self._queue.put(review)
                 queued += 1
+                queued_ids.append(review.id)
+                self._status.update_reconciliation_progress(
+                    queued=queued,
+                    pending=self._store.retryable_count(),
+                    unavailable=self._store.unavailable_count(),
+                )
         while batch := self._store.due_reviews():
             for review in batch:
                 if self._store.mark_queued(review.id):
                     await self._queue.put(review)
                     queued += 1
+                    queued_ids.append(review.id)
+                    self._status.update_reconciliation_progress(
+                        queued=queued,
+                        pending=self._store.retryable_count(),
+                        unavailable=self._store.unavailable_count(),
+                    )
         await self._queue.join()
         summary = self._store.summary()
         pending = self._store.retryable_count()
         unavailable = self._store.unavailable_count()
+        processed = len(queued_ids)
+        self._status.update_reconciliation_progress(
+            processed=processed,
+            pending=pending,
+            unavailable=unavailable,
+        )
         self._status.set_reconciliation_result(
-            discovered=len(reviews), queued=queued, pending=pending,
+            discovered=len(reviews),
+            queued=queued,
+            processed=processed,
+            pending=pending,
             unavailable=unavailable,
         )
         state_summary = ", ".join(
@@ -80,14 +104,15 @@ class ReconciliationWorker:
             logger.info(
                 "Reconciliation successful: discovered %d review(s), processed %d, retry queue empty (%d unavailable)",
                 len(reviews),
-                queued,
+                processed,
                 unavailable,
             )
         else:
             logger.warning(
-                "Reconciliation finished with pending reviews: discovered %d, newly queued %d, pending %d (%s)",
+                "Reconciliation finished with pending reviews: discovered %d, newly queued %d, processed %d, pending %d (%s)",
                 len(reviews),
                 queued,
+                processed,
                 pending,
                 state_summary,
             )
@@ -113,11 +138,9 @@ class ReconciliationWorker:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._status.set_reconciliation_result(
-                    discovered=0,
-                    queued=0,
+                self._status.set_reconciliation_error(
+                    str(exc),
                     pending=self._store.retryable_count(),
                     unavailable=self._store.unavailable_count(),
-                    error=str(exc),
                 )
                 logger.exception("Review reconciliation failed")

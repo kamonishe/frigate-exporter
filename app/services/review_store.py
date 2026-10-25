@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.models.review import Review
@@ -36,6 +37,10 @@ class ReviewStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 )"""
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reviews_state_updated "
+                "ON reviews (state, updated_at)"
             )
             row = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'reconciliation_cutoff'"
@@ -114,13 +119,62 @@ class ReviewStore:
             )
             connection.commit()
 
-    def fail(self, review_id: str, error: str, retry_after: float = 60) -> None:
+    def fail(
+        self,
+        review_id: str,
+        error: str,
+        retry_after: float = 60,
+        *,
+        max_attempts: int | None = None,
+        expire_before: float | None = None,
+    ) -> bool:
+        """Record a failed attempt and return whether it became terminal.
+
+        A review is made unavailable when it has exceeded the configured
+        attempt limit or its event has left the configured retention window.
+        """
+        now = time.time()
         with closing(sqlite3.connect(self._path)) as connection, connection:
+            row = connection.execute(
+                "SELECT attempts, payload FROM reviews WHERE review_id = ?",
+                (review_id,),
+            ).fetchone()
+            if row is None:
+                return False
+
+            attempts, payload = row
+            terminal_reasons: list[str] = []
+            if max_attempts is not None and attempts >= max_attempts:
+                terminal_reasons.append(
+                    f"maximum attempts reached ({max_attempts})"
+                )
+
+            if expire_before is not None:
+                try:
+                    event_time = Review.model_validate_json(payload).end_time
+                except ValueError:
+                    event_time = None
+                if event_time is not None and event_time < expire_before:
+                    terminal_reasons.append("review is outside retention window")
+
+            terminal = bool(terminal_reasons)
+            stored_error = (
+                f"{error} ({'; '.join(terminal_reasons)})"
+                if terminal
+                else error
+            )[:1000]
             connection.execute(
-                "UPDATE reviews SET state = 'failed', last_error = ?, next_attempt_at = ?, updated_at = ? WHERE review_id = ?",
-                (error[:1000], time.time() + retry_after, time.time(), review_id),
+                "UPDATE reviews SET state = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE review_id = ?",
+                (
+                    "unavailable" if terminal else "failed",
+                    stored_error,
+                    0 if terminal else now + retry_after,
+                    now,
+                    review_id,
+                ),
             )
             connection.commit()
+        return terminal
 
     def mark_unavailable(self, review_id: str, error: str) -> None:
         """Permanently stop retrying a review with no source recording."""
@@ -130,6 +184,36 @@ class ReviewStore:
                 (error[:1000], time.time(), review_id),
             )
             connection.commit()
+
+    def queue_status(self) -> dict[str, object]:
+        """Return durable backlog size and the oldest active review."""
+        with closing(sqlite3.connect(self._path)) as connection, connection:
+            count_row = connection.execute(
+                "SELECT COUNT(*) FROM reviews WHERE state NOT IN ('completed', 'unavailable')"
+            ).fetchone()
+            oldest = connection.execute(
+                "SELECT review_id, payload, state, updated_at "
+                "FROM reviews WHERE state NOT IN ('completed', 'unavailable') "
+                "ORDER BY updated_at LIMIT 1"
+            ).fetchone()
+        pending = int(count_row[0]) if count_row else 0
+        result: dict[str, object] = {"pending": pending, "oldest": None}
+        if oldest is None:
+            return result
+        review_id, payload, state, updated_at = oldest
+        try:
+            review = Review.model_validate_json(payload)
+            camera = review.camera
+        except ValueError:
+            camera = None
+        result["oldest"] = {
+            "review_id": review_id,
+            "camera": camera,
+            "state": state,
+            "queued_at": datetime.fromtimestamp(updated_at, UTC).isoformat(),
+            "age_seconds": max(0.0, time.time() - updated_at),
+        }
+        return result
 
     def retryable_count(self) -> int:
         with closing(sqlite3.connect(self._path)) as connection, connection:

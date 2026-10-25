@@ -227,6 +227,44 @@ class RuntimeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["logs"][0]["message"], "entry 2 [REDACTED]")
 
 
+    def test_reconciliation_progress_is_visible_while_processing(self) -> None:
+        status = RuntimeStatus("frigate/reviews", 1)
+        status.start_reconciliation()
+        status.update_reconciliation_progress(discovered=10, queued=3, pending=3)
+        active = status.snapshot(3)["reconciliation"]
+        self.assertEqual(active["state"], "processing")
+        self.assertEqual(active["active"]["discovered"], 10)
+        self.assertEqual(active["active"]["queued"], 3)
+        self.assertEqual(active["active"]["pending"], 3)
+
+        status.set_reconciliation_result(
+            discovered=10, queued=3, processed=3, pending=0, unavailable=1
+        )
+        result = status.snapshot(0)["reconciliation"]
+        self.assertEqual(result["state"], "success")
+        self.assertEqual(result["processed"], 3)
+        self.assertIsNone(result["active"])
+
+    def test_camera_activity_tracks_success_and_failure_details(self) -> None:
+        status = RuntimeStatus("frigate/reviews", 1, secrets=["secret"])
+        review = Review.model_validate({
+            "id": "camera-review",
+            "camera": "front",
+            "start_time": 1,
+            "end_time": 2,
+            "severity": "alert",
+            "thumb_path": "/tmp/thumb.webp",
+        })
+        status.set_worker_review(1, review)
+        status.set_worker_idle(1, bytes_exported=2048)
+        status.set_worker_review(1, review)
+        status.set_worker_idle(1, "failed secret", result_kind="failed")
+        stats = status.snapshot(0)["camera_stats"]["front"]
+        self.assertEqual(stats["exported"], 1)
+        self.assertEqual(stats["failed"], 1)
+        self.assertEqual(stats["bytes_exported"], 2048)
+        self.assertEqual(stats["recent_failures"][0]["error"], "failed [REDACTED]")
+
     def test_reconciliation_result_reports_drained_success(self) -> None:
         status = RuntimeStatus("frigate/reviews", 1)
         status.set_reconciliation_result(discovered=6, queued=2, pending=0, unavailable=3)

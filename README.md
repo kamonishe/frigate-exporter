@@ -49,10 +49,13 @@ export:
   pre_capture: 3
   post_capture: 3
   export_timeout: 900
+  max_attempts: 5
 
 retention:
   enabled: true
+  # Set either days or hours, but not both.
   days: 30
+  # hours: 1
   check_interval_hours: 24
 
 filters:
@@ -82,7 +85,12 @@ The exporter automatically reconnects to MQTT after temporary connection failure
 
 Each Frigate export is bounded by export_timeout seconds (900 by default). If
 Frigate leaves an export stuck or removes it before completion, the exporter
-marks the review for retry instead of holding a worker indefinitely.
+marks the review for retry instead of holding a worker indefinitely. Failed
+exports are attempted at most max_attempts times (5 by default). When retention
+is enabled, a failed review whose event has moved outside the retention window
+is marked unavailable rather than retried indefinitely. Unavailable review
+records are removed by the normal retention cleanup after they leave that
+window.
 
 ### Dashboard
 
@@ -90,13 +98,13 @@ The log-level dropdown and **Enable HTTP logs (aiohttp)** checkbox apply automat
 
 The authenticated dashboard listens on port `5050` by default. The supplied Compose file publishes `5050:5050`, making it available at `http://HOST_PRIVATE_IP:5050`. Sign in using the `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` environment variables.
 
-The dashboard shows detailed MQTT and Frigate connection state, queue depth, worker phases and export progress, recent exporter logs, and combined exported-storage and retention information. Its `/healthz` endpoint supports the supplied Docker health check. Set `dashboard.enabled: false` to disable the dashboard.
+The dashboard shows detailed MQTT and Frigate connection state, durable queue depth with the oldest waiting review, worker phases and export progress, per-camera export and failure summaries, recent exporter logs, and combined exported-storage and retention information. Reconciliation reports `Processing` while a recovery scan is active and keeps live progress separate from the last completed run. Its `/healthz` endpoint supports the supplied Docker health check. Set `dashboard.enabled: false` to disable the dashboard.
 
 The dashboard has a login page, a **Restart exporter** button, and a Sign out button. Restart requires confirmation, sends a graceful shutdown signal, and relies on the container restart policy to bring the exporter back. Browser sessions expire after 12 hours or when the exporter restarts. HTTP Basic authentication remains available for API clients, without browser login popups. The application does not provide TLS. Keep port `5050` on a trusted private network or place the dashboard behind an HTTPS reverse proxy. Do not expose it directly to the public internet.
 
 ## Retention
 
-When enabled, the retention worker removes exported `.mp4` files older than the configured number of days.
+When enabled, the retention worker removes exported `.mp4` files older than the configured retention window. Retention uses the Frigate review event end time for newly exported files, so backlog processing does not extend their lifetime. Use `days` for day-based retention or replace it with `hours` for a sub-day window such as `hours: 1`; set only one of these fields. The same window controls when unavailable review records are purged and when retry attempts expire.
 
 ### Review reconciliation
 

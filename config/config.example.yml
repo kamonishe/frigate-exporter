@@ -18,10 +18,13 @@ export:
   pre_capture: 3
   post_capture: 3
   export_timeout: 900
+  max_attempts: 5
 
 retention:
   enabled: true
+  # Set either days or hours, but not both.
   days: 1
+  # hours: 1
   check_interval_hours: 1
 
 filters:

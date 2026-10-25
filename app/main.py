@@ -149,7 +149,9 @@ async def async_main() -> None:
     status.configure_retention(
         enabled=cfg.retention.enabled,
         days=cfg.retention.days,
+        hours=cfg.retention.hours,
         check_interval_hours=cfg.retention.check_interval_hours,
+        retention_seconds=cfg.retention.retention_seconds,
     )
 
     setup_logging(cfg.logging.level, status.add_log)
@@ -172,6 +174,7 @@ async def async_main() -> None:
         reconciliation_callback=lambda: reconciliation_worker.trigger_reconcile(
             "dashboard", force=True
         ),
+        queue_status_callback=review_store.queue_status,
     )
 
     def on_mqtt_state(state: str, error: str | None = None) -> None:
@@ -262,7 +265,7 @@ async def async_main() -> None:
         if cfg.retention.enabled:
             print(
                 f"{'Retention':<12}: "
-                f"{cfg.retention.days} day(s), "
+                f"{cfg.retention.retention_label}, "
                 f"every {cfg.retention.check_interval_hours} hour(s)"
             )
         else:

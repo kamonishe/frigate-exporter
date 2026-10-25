@@ -33,7 +33,9 @@ class RetentionWorker:
         self._status.configure_retention(
             enabled=config.retention.enabled,
             days=config.retention.days,
+            hours=config.retention.hours,
             check_interval_hours=config.retention.check_interval_hours,
+            retention_seconds=config.retention.retention_seconds,
         )
 
     def trigger_cleanup(self) -> bool:
@@ -50,8 +52,8 @@ class RetentionWorker:
             return
 
         logger.debug(
-            "Retention worker started (keeping %d days, checking every %d hour(s)).",
-            self._config.retention.days,
+            "Retention worker started (keeping %s, checking every %d hour(s)).",
+            self._config.retention.retention_label,
             self._config.retention.check_interval_hours,
         )
 
@@ -92,10 +94,7 @@ class RetentionWorker:
         else:
             logger.debug("Starting retention cleanup...")
 
-        cutoff = (
-            time.time()
-            - self._config.retention.days * 24 * 3600
-        )
+        cutoff = time.time() - self._config.retention.retention_seconds
         next_run_at = datetime.now(UTC) + timedelta(
             hours=self._config.retention.check_interval_hours
         )

@@ -84,6 +84,21 @@ class ReviewStoreTests(unittest.TestCase):
             store.initialize()
             self.assertGreaterEqual(store.reconciliation_cutoff, before)
 
+    def test_queue_status_reports_oldest_active_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReviewStore(Path(directory))
+            store.initialize()
+            item = review()
+            self.assertTrue(store.queue_if_needed(item))
+            status = store.queue_status()
+            self.assertEqual(status["pending"], 1)
+            oldest = status["oldest"]
+            self.assertIsNotNone(oldest)
+            self.assertEqual(oldest["review_id"], item.id)
+            self.assertEqual(oldest["camera"], item.camera)
+            self.assertEqual(oldest["state"], "pending")
+            self.assertGreaterEqual(oldest["age_seconds"], 0)
+
     def test_failed_review_becomes_due_after_retry_delay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ReviewStore(Path(directory))
@@ -93,6 +108,46 @@ class ReviewStoreTests(unittest.TestCase):
             store.mark_queued(item.id)
             store.fail(item.id, "temporary", retry_after=0)
             self.assertEqual(store.due_reviews()[0].id, item.id)
+
+    def test_failed_review_becomes_unavailable_at_attempt_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReviewStore(Path(directory))
+            store.initialize()
+            item = review()
+            store.queue_if_needed(item)
+            store.mark_queued(item.id)
+
+            store.claim(item.id)
+            self.assertFalse(
+                store.fail(item.id, "temporary", retry_after=0, max_attempts=2)
+            )
+            store.mark_queued(item.id)
+            store.claim(item.id)
+            self.assertTrue(
+                store.fail(item.id, "temporary", retry_after=0, max_attempts=2)
+            )
+
+            self.assertEqual(store.summary(), {"unavailable": 1})
+            self.assertEqual(store.due_reviews(), [])
+
+    def test_failed_review_outside_retention_becomes_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReviewStore(Path(directory))
+            store.initialize()
+            item = review()
+            store.queue_if_needed(item)
+            store.mark_queued(item.id)
+            store.claim(item.id)
+
+            self.assertTrue(
+                store.fail(
+                    item.id,
+                    "temporary",
+                    max_attempts=10,
+                    expire_before=3,
+                )
+            )
+            self.assertEqual(store.summary(), {"unavailable": 1})
 
     def test_unavailable_review_is_terminal_and_expires_with_retention(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
